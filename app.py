@@ -509,6 +509,7 @@ def main() -> None:
                 _fc = [(r,c) for r in range(1,GRID_SIZE-1) for c in range(1,GRID_SIZE-1) if wm[r,c]==0]
                 st.session_state.start_select = _find_cell_index(_fc, sg_start)
                 st.session_state.goal_select  = _find_cell_index(_fc, sg_goal)
+                st.session_state.anim_running = False
                 st.rerun()   # 立即终止当前脚本，下方 input_seed 检测不会执行
 
         # 手动修改 seed 输入框时触发（随机按钮已由上方 rerun 短路，不会重复）
@@ -524,6 +525,7 @@ def main() -> None:
             _fc = [(r,c) for r in range(1,GRID_SIZE-1) for c in range(1,GRID_SIZE-1) if wm[r,c]==0]
             st.session_state.start_select = _find_cell_index(_fc, sg_start)
             st.session_state.goal_select  = _find_cell_index(_fc, sg_goal)
+            st.session_state.anim_running = False
             st.rerun()
 
         st.divider()
@@ -550,6 +552,7 @@ def main() -> None:
                 st.session_state.metrics  = None
                 st.session_state.start_select = _find_cell_index(_inner, _inner[_i])
                 st.session_state.goal_select  = _find_cell_index(_inner, _inner[_j])
+                st.session_state.anim_running = False
                 st.rerun()
 
         N = GRID_SIZE
@@ -608,6 +611,7 @@ def main() -> None:
             st.session_state.model_grid_size = saved_gs
             st.session_state.dqn_path        = None
             st.session_state.metrics         = None
+            st.session_state.anim_running    = False
             st.rerun()
 
         run_dqn = st.button(
