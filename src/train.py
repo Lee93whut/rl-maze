@@ -173,12 +173,12 @@ def optimize_model(
 # ===========================================================================
 
 def _sample_connected_start_goal(
-    wall_map: "np.ndarray",
+    wall_map: np.ndarray,
     grid_size: int,
-    rng: "np.random.Generator",
-    default_start: "tuple[int, int]",
-    default_goal:  "tuple[int, int]",
-) -> "tuple[tuple[int, int], tuple[int, int]]":
+    rng: np.random.Generator,
+    default_start: tuple[int, int],
+    default_goal:  tuple[int, int],
+) -> tuple[tuple[int, int], tuple[int, int]]:
     """从 wall_map 的内圈自由格中随机采样一对 BFS 连通的起终点。
 
     采用有限重试 + fallback 设计，杜绝任何极端地图下的无限循环：
