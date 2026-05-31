@@ -10,7 +10,7 @@ license: mit
 
 # RL Maze Navigator
 
-### Benchmarking DQN variants on procedurally-generated mazes · SPL evaluation · 75% Holdout success rate
+### Benchmarking DQN variants on procedurally-generated mazes · SPL evaluation · 74% Holdout success rate
 
 [![CI](https://github.com/Lee93whut/rl-maze/actions/workflows/test.yml/badge.svg)](https://github.com/Lee93whut/rl-maze/actions/workflows/test.yml)
 [![Python](https://img.shields.io/badge/python-3.10-blue)](https://www.python.org/)
@@ -22,15 +22,15 @@ license: mit
 
 ---
 
-## 算法对比结果（Round 4，最终）
+## 算法对比结果（Round 3，最终）
 
 > Holdout 评估：100 张训练中**从未见过**的独立地图（seed+200000），ε=0 贪心推理。  
 > 指标：[SPL](https://arxiv.org/abs/1807.06757)（Anderson et al. 2018，导航领域标准评估指标）。  
-> Round 4 最终超参：`buffer=80000`、`target_update_freq=1500`、`distance_shaping_alpha=0.5`、`visited_map` 第四通道 + EVAL-based checkpoint，Double DQN。
+> Round 3 超参：`buffer=80000`、`target_update_freq=1500`、`distance_shaping_alpha=0.5`，Double DQN 单算法验证。
 
 | 算法 | 成功率 | SPL | 峰值成功率 | 收敛 Episode |
 |------|:------:|:---:|:---------:|:-----------:|
-| **Double DQN** (R4) | **75.0%** | **0.735** | **84.0%** | 3750 |
+| **Double DQN** (R3) | **74.0%** | **0.735** | **84.0%** | 3750 |
 | Double DQN (R2) | 64.0% | 0.633 | 74.0% | 3300 |
 | Vanilla DQN (R1) | 56.0% | 0.559 | — | 1921 |
 | Double DQN (R1) | 61.0% | 0.605 | — | 948 |
@@ -98,15 +98,27 @@ if self.distance_shaping_alpha != 0.0:
 
 撞墙步位置不变，不触发 shaping，避免撞墙获得零 shaping 奖励误导策略。`α=0.5` 使 shaping 幅度为基础奖励（-1）的 50%，提供方向感但不压过终点奖励（+100）。符合 Ng et al. (1999) 的势函数 shaping 理论，保证最优策略不变。
 
-### 5. Anti-Loop：visited_map 第四通道
+### 5. Anti-Loop 双层防护
 
-Round 4 将"对重复访问格子追加 `revisit_penalty`"方案替换为在观测中增加第四通道（访问历史图）。
+**训练阶段**：对重复访问格子施加递进奖励惩罚，引导 Q 函数主动规避循环路径：
 
-**弃用原因**：`revisit_penalty` 依赖 Episode 内状态（访问计数），违反马尔可夫性——Q 函数的输入状态相同但目标值不同，导致训练目标不稳定。
+```python
+if revisit_penalty != 0.0 and not info.get("hit_wall", False):
+    visit_cnt = ep_visited.get(cur_pos, 0)
+    if visit_cnt > 0:
+        reward += revisit_penalty * visit_cnt  # 访问次数越多，惩罚越重
+    ep_visited[cur_pos] = visit_cnt + 1
+```
 
-**现行方案**：观测张量 `(4, N, N)` 第四通道为二值访问图（1=本 Episode 内到达过，0=未到达），历史信息直接编码进状态，保持马尔可夫性。推理侧（`app.py`）执行裸 argmax，无需额外 Q 值修正。
+**推理阶段**（Demo）：对高频重复访问的格子施加 Q 值惩罚，作为额外安全网：
 
-> **设计备注**：曾考虑“访问次数归一化”（`count / max_steps`），但在 `max_steps=200` 的迷宫任务中，Agent 极少对同一格访问超2–3次，计数信号的高频区间（4–200）几乎无训练样本覆盖，归一化后的数值分布极度不均匀。二值图更简洁，且 Q 函数真正需要的信息是“去过/没去过”而非精确次数，与 Markov 状态表达的最小充分性原则一致。
+```python
+visit_cnt = visited_count.get(cur_pos, 0)
+if visit_cnt >= 2:
+    q_values[action] -= 3.0 * visit_cnt
+```
+
+两层机制职责分离：训练层修改 reward shaping 使 Q 函数内化回避循环；推理层直接修正 Q 值作为兜底，不影响训练分布。
 
 ### 6. BFS 连通性保证
 
@@ -215,7 +227,7 @@ rl-maze/
 │
 ├── src/
 │   ├── train.py                DQN 训练主循环（Warmup + 三看板 + 盲测评估）
-│   ├── model.py                DQNNetwork（3-Conv + 2-FC）/ DuelingDQNNetwork（3-Conv + 2×2-FC streams）
+│   ├── model.py                DQNNetwork / DuelingDQNNetwork（3-Conv + 2-FC）
 │   ├── replay_buffer.py        环形经验回放池
 │   └── report.py               四算法 Holdout 横向对比报告生成器
 │
@@ -250,8 +262,7 @@ rl-maze/
 |------|---------|:--------------:|:---:|
 | Round 1 | 初版（`ep=2000`, `decay=0.995`） | 61.0% | 0.605 |
 | Round 2 | `ep=6000`, `decay=0.9985` | 64.0% | 0.633 |
-| Round 3 | `buffer=80k`, `target_freq=1500`, `shaping=0.5` | 74.0% | 0.735 |
-| **Round 4** | `visited_map` 4th channel + EVAL-based checkpoint | **75.0%** | **0.735** |
+| Round 3 | `buffer=80k`, `target_freq=1500`, `shaping=0.5` | **74.0%** | **0.735** |
 
 完整超参诊断与论文依据详见 [`docs/hyperparameter_study.md`](docs/hyperparameter_study.md)。
 
