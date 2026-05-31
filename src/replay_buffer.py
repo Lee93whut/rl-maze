@@ -19,7 +19,7 @@
 * ``action``     : ``int``
 * ``reward``     : ``float``
 * ``next_state`` : ``np.ndarray`` shape ``(4, N, N)`` float32
-* ``done``       : ``bool``  （terminated OR truncated）
+* ``done``       : ``bool``  仅 ``terminated``（自然结束）为 True；``truncated``（时间截断）存为 False，保留 bootstrap 价值
 """
 
 from __future__ import annotations
@@ -37,11 +37,11 @@ __all__ = ["Transition", "ReplayBuffer"]
 class Transition(NamedTuple):
     """单条经验转移（immutable，字段具名访问）。"""
 
-    state:      np.ndarray   # (3, N, N) float32
+    state:      np.ndarray   # (4, N, N) float32
     action:     int
     reward:     float
-    next_state: np.ndarray   # (3, N, N) float32
-    done:       bool         # terminated | truncated
+    next_state: np.ndarray   # (4, N, N) float32
+    done:       bool         # terminated only —— truncated 存 False，不屏蔽 bootstrap
 
 
 class ReplayBuffer:
@@ -55,7 +55,7 @@ class ReplayBuffer:
         >>> buf.push(state, action, reward, next_state, done)
         >>> batch = buf.sample(64, device=torch.device("cpu"))
         >>> batch["states"].shape
-        torch.Size([64, 3, N, N])
+        torch.Size([64, 4, N, N])
     """
 
     def __init__(self, capacity: int) -> None:
@@ -84,7 +84,9 @@ class ReplayBuffer:
             action:     执行的动作编号。
             reward:     获得的即时奖励。
             next_state: 下一步观测，shape ``(4, N, N)``。
-            done:       本步是否为幕终止（terminated | truncated）。
+            done:       是否为自然终止（仅传入 ``terminated``）。
+                        ``truncated``（超出 max_steps）应传 False，
+                        使 TD 目标继续 bootstrap next_state 的价值。
         """
         t = Transition(
             state=state,
@@ -115,10 +117,10 @@ class ReplayBuffer:
         Returns:
             包含以下键的字典：
 
-            * ``"states"``      : ``(B, 3, N, N)`` float32
+            * ``"states"``      : ``(B, 4, N, N)`` float32
             * ``"actions"``     : ``(B,)``          int64
             * ``"rewards"``     : ``(B,)``          float32
-            * ``"next_states"`` : ``(B, 3, N, N)`` float32
+            * ``"next_states"`` : ``(B, 4, N, N)`` float32
             * ``"dones"``       : ``(B,)``          float32  (0.0 / 1.0)
 
         Raises:
@@ -132,8 +134,8 @@ class ReplayBuffer:
         transitions: list[Transition] = random.sample(self._buffer, batch_size)
 
         # 批量转换：一次 np.stack 比逐条 tensor() 快 ~10x
-        states      = np.stack([t.state      for t in transitions])   # (B,3,N,N)
-        next_states = np.stack([t.next_state for t in transitions])   # (B,3,N,N)
+        states      = np.stack([t.state      for t in transitions])   # (B,4,N,N)
+        next_states = np.stack([t.next_state for t in transitions])   # (B,4,N,N)
         actions     = np.array([t.action     for t in transitions], dtype=np.int64)
         rewards     = np.array([t.reward     for t in transitions], dtype=np.float32)
         dones       = np.array([t.done       for t in transitions], dtype=np.float32)

@@ -135,14 +135,15 @@ def optimize_model(
     actions     = batch["actions"]      # (B,)
     rewards     = batch["rewards"]      # (B,)
     next_states = batch["next_states"]  # (B, 4, N, N)
-    dones       = batch["dones"]        # (B,)
+    terminated_mask = batch["dones"]    # (B,)  terminated=1，truncated 存为 0
 
     # ── 当前 Q 值：Q(s, a) ────────────────────────────────────────────────
     q_all     = policy_net(states)                                    # (B, 4)
     q_current = q_all.gather(1, actions.unsqueeze(1)).squeeze(1)      # (B,)
     avg_q     = float(q_all.detach().mean().item())
 
-    # ── 目标 Q 值：r + γ · Q_target(s', argmax_policy) · (1 - done) ────
+    # ── 目标 Q 值：r + γ · Q_target(s', argmax_policy) · (1 - terminated) ──
+    # truncated 不屏蔽 bootstrap；仅 terminated（自然结束）屏蔽
     with torch.no_grad():
         if use_double:
             # Double DQN：policy_net 选动作，target_net 估值
@@ -153,7 +154,7 @@ def optimize_model(
         else:
             # Vanilla DQN：target_net 直接取 max Q 值 (Mnih et al., 2015)
             q_next_max = target_net(next_states).max(dim=1).values
-        q_target = rewards + gamma * q_next_max * (1.0 - dones)
+        q_target = rewards + gamma * q_next_max * (1.0 - terminated_mask)
 
     # ── Huber Loss & 反向传播 ─────────────────────────────────────────────
     loss = nn.functional.smooth_l1_loss(q_current, q_target)
@@ -534,7 +535,9 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
             done = terminated or truncated
 
             # ── 存入回放池 ────────────────────────────────────────────────
-            buffer.push(state, action, float(reward), next_state, done)
+            # 仅用 terminated 做 bootstrap mask：truncated 表示时间截断，
+            # next_state 仍有价值，不应将 γ·Q(s') 归零（Gymnasium v0.26 语义）
+            buffer.push(state, action, float(reward), next_state, terminated)
 
             state          = next_state
             ep_reward     += float(reward)
