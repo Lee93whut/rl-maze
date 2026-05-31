@@ -186,7 +186,8 @@ def load_model(algo: str = DEFAULT_ALGO, grid_size: int = GRID_SIZE) -> tuple[Op
         saved_gs    = ckpt.get("grid_size", grid_size)
         algorithm   = ckpt.get("algorithm", "vanilla").strip().lower()
         NetClass    = DuelingDQNNetwork if "dueling" in algorithm else DQNNetwork
-        net = NetClass(grid_size=saved_gs)
+        in_ch = ckpt["state_dict"]["conv.0.weight"].shape[1]
+        net = NetClass(grid_size=saved_gs, input_channels=in_ch)
         net.load_state_dict(ckpt["state_dict"])
         net.eval()
         return net, saved_gs
