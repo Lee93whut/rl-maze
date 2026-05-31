@@ -228,14 +228,26 @@ def dqn_rollout(
 
     path = [env.agent_pos]
 
-    # 注：R4 起观测已包含 visited_map 第4通道（ch3），Agent 天然感知访问历史，
-    # 无需在推理侧注入 Q 值惩罚。直接贪心执行即可。
+    # 推理侧 anti-loop 兜底：visited_map（ch3）已让 Q 函数内化访问历史，
+    # 但对未充分覆盖的状态仍可能陷入两格死循环。
+    # 访问次数 >= 2 时对当前 argmax 动作施加递进 Q 值惩罚作为安全网，
+    # 不修改网络权重，不影响训练分布。
+    visited_count: dict[tuple, int] = {}
+
     while True:
         s = torch.from_numpy(obs).unsqueeze(0)
         with torch.no_grad():
-            q_values = net(s)[0]            # shape: (num_actions,)
+            q_values = net(s)[0].clone()    # shape: (num_actions,)
+
+        # 对高频重访格子的当前最优动作施加惩罚
+        cur_pos  = env.agent_pos
+        cnt      = visited_count.get(cur_pos, 0)
+        if cnt >= 2:
+            action_candidate = int(q_values.argmax().item())
+            q_values[action_candidate] -= 3.0 * cnt
 
         action = int(q_values.argmax().item())
+        visited_count[cur_pos] = cnt + 1
         obs, _reward, terminated, truncated, info = env.step(action)
 
         # 只在实际移动时追加（撞墙时位置不变，避免重复坐标导致动画抖帧）
