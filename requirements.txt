@@ -1,0 +1,19 @@
+# requirements.txt — 训练 + 部署额外依赖
+# 核心依赖（gymnasium / numpy / pyyaml）已在 pyproject.toml 声明，此处不重复。
+# 安装顺序：pip install -e ".[dev]" && pip install -r requirements.txt
+
+# ── 深度学习框架（CPU-only，推理部署无需 GPU，镜像体积从 ~3GB 降至 ~700MB）──
+# Dockerfile 中通过 --index-url 单独安装 CPU-only wheel，此处保留版本约束
+torch>=2.1.0
+
+# ── 训练监控（SummaryWriter 依赖独立 tensorboard 包，torch 本身不包含）──────
+tensorboard>=2.14.0
+
+# ── Web 前端框架 ──────────────────────────────────────────────────────────
+streamlit>=1.32.0
+
+# ── 交互式绘图（迷宫可视化）──────────────────────────────────────────────
+plotly>=5.18.0
+
+# ── 权重下载（scripts/download_weights.py）──────────────────────────────
+huggingface_hub>=0.20.0
