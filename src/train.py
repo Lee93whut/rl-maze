@@ -11,9 +11,9 @@ TensorBoard 三栏目架构
     指标：Episode_Reward、Episode_Steps、Rollout_Success_Rate、Global_Epsilon
 
 📂 Evaluation_Exam/  （盲测闭卷考试指标）
-    横坐标：episode_count（每 50 局写入一次）
-    时机：暂停训练，model.eval()，ε=0，20 张独立测试迷宫
-    指标：Test_Success_Rate、Path_Optimality_Ratio（BFS_steps / AI_steps）
+    横坐标：episode_count（每 100 局写入一次，config: eval_every）
+    时机：暂停训练，model.eval()，ε=0，50 张独立测试迷宫（config: num_test_mazes）
+    指标：Test_Success_Rate、SPL（Anderson et al. 2018）
 
 Warmup 机制
 -----------
@@ -54,6 +54,7 @@ from src.model import DQNNetwork, DuelingDQNNetwork
 from src.replay_buffer import ReplayBuffer
 from maze_env import MazeEnv
 from maze_env.bfs import bfs as _bfs
+from maze_env.generator import bfs_reachable as _bfs_reachable
 
 
 # ===========================================================================
@@ -130,10 +131,10 @@ def optimize_model(
     """
     batch = buffer.sample(batch_size, device)
 
-    states      = batch["states"]       # (B, 3, N, N)
+    states      = batch["states"]       # (B, 4, N, N)
     actions     = batch["actions"]      # (B,)
     rewards     = batch["rewards"]      # (B,)
-    next_states = batch["next_states"]  # (B, 3, N, N)
+    next_states = batch["next_states"]  # (B, 4, N, N)
     dones       = batch["dones"]        # (B,)
 
     # ── 当前 Q 值：Q(s, a) ────────────────────────────────────────────────
@@ -164,6 +165,59 @@ def optimize_model(
     optimizer.step()
 
     return float(loss.item()), avg_q, grad_norm
+
+
+# ===========================================================================
+# 4-pre. 共用辅助：采样连通起终点（训练侧与评估侧统一调用）
+# ===========================================================================
+
+def _sample_connected_start_goal(
+    wall_map: "np.ndarray",
+    grid_size: int,
+    rng: "np.random.Generator",
+    default_start: "tuple[int, int]",
+    default_goal:  "tuple[int, int]",
+) -> "tuple[tuple[int, int], tuple[int, int]]":
+    """从 wall_map 的内圈自由格中随机采样一对 BFS 连通的起终点。
+
+    采用有限重试 + fallback 设计，杜绝任何极端地图下的无限循环：
+
+    * 先筛选内圈（去除边界外圈）自由格列表 ``inner``。
+    * 至多重试 ``len(inner) ** 2`` 次（覆盖所有排列对数量级）；
+      每次用 ``rng.choice(..., replace=False)`` 一行完成不重复采样，
+      无需额外去重循环。
+    * 若耗尽重试仍未找到连通对（极端高密度地图、所有自由格互不连通），
+      安全回退到环境默认起终点，训练/评估进程不会挂死。
+
+    Args:
+        wall_map:      当前地图的墙图（0=自由，1=墙）。
+        grid_size:     地图边长，用于过滤边界外圈。
+        rng:           调用方传入的 ``np.random.Generator``，保证随机流可控。
+        default_start: fallback 用的默认起点（通常为 ``env.agent_pos``）。
+        default_goal:  fallback 用的默认终点（通常为 ``env.goal_pos``）。
+
+    Returns:
+        ``(start_pos, goal_pos)`` 元组，均为 ``(row, col)`` 格式。
+    """
+    rows_free, cols_free = np.where(wall_map == 0)
+    inner: list[tuple[int, int]] = [
+        (int(r), int(c)) for r, c in zip(rows_free, cols_free)
+        if 0 < r < grid_size - 1 and 0 < c < grid_size - 1
+    ]
+    if len(inner) < 2:
+        # 自由格不足，直接 fallback
+        return default_start, default_goal
+
+    max_retries = len(inner) ** 2
+    for _ in range(max_retries):
+        idxs = rng.choice(len(inner), size=2, replace=False)   # 天然不重复，无需去重循环
+        start_pos = inner[idxs[0]]
+        goal_pos  = inner[idxs[1]]
+        if _bfs_reachable(wall_map, start_pos, goal_pos):
+            return start_pos, goal_pos
+
+    # 耗尽重试：极端地图（所有自由格互不连通），安全回退
+    return default_start, default_goal
 
 
 # ===========================================================================
@@ -220,26 +274,18 @@ def run_evaluation(
                 # ── Step 2：从自由格随机选起终点（派生种子，保证确定性）──
                 wall_map_copy = env.wall_map.copy()
                 rng = np.random.default_rng(seed_i ^ 0xABCD1234)
-                rows_free, cols_free = np.where(wall_map_copy == 0)
-                # 排除边界外圈（边界均为墙，此过滤为防御性代码）
-                inner = [
-                    (int(r), int(c)) for r, c in zip(rows_free, cols_free)
-                    if 0 < r < grid_size - 1 and 0 < c < grid_size - 1
-                ]
-                if len(inner) >= 2:
-                    idxs = rng.choice(len(inner), size=2, replace=False)
-                    start_pos = inner[idxs[0]]
-                    goal_pos  = inner[idxs[1]]
-                    # Step 3：注入 wall_map + 随机起终点重置（env 内 BFS 保证连通）
-                    obs, _ = env.reset(seed=seed_i, options={
-                        "wall_map": wall_map_copy,
-                        "start":    start_pos,
-                        "goal":     goal_pos,
-                    })
-                else:
-                    # 自由格不足（极端地图），回退到默认起终点
-                    start_pos = env.agent_pos
-                    goal_pos  = env.goal_pos
+                # 采样连通起终点（有限重试 + fallback，防止极端地图挂死）
+                start_pos, goal_pos = _sample_connected_start_goal(
+                    wall_map_copy, grid_size, rng,
+                    default_start=env.agent_pos,
+                    default_goal=env.goal_pos,
+                )
+                # Step 3：注入 wall_map + 随机起终点重置
+                obs, _ = env.reset(seed=seed_i, options={
+                    "wall_map": wall_map_copy,
+                    "start":    start_pos,
+                    "goal":     goal_pos,
+                })
             else:
                 start_pos = env.agent_pos
                 goal_pos  = env.goal_pos
@@ -452,20 +498,18 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
             # 随机起终点训练：先 reset 取墙图，再从自由格随机选起终点重注入
             obs, _ = env.reset()
             _wall_map_train = env.wall_map.copy()
-            _rows_t, _cols_t = np.where(_wall_map_train == 0)
-            _inner_t = [
-                (int(r), int(c)) for r, c in zip(_rows_t, _cols_t)
-                if 0 < r < grid_size - 1 and 0 < c < grid_size - 1
-            ]
-            if len(_inner_t) >= 2:
-                _idxs_t = env.np_random.integers(0, len(_inner_t), size=2)
-                while _idxs_t[0] == _idxs_t[1]:
-                    _idxs_t = env.np_random.integers(0, len(_inner_t), size=2)
-                obs, _ = env.reset(options={
-                    "wall_map": _wall_map_train,
-                    "start":    _inner_t[_idxs_t[0]],
-                    "goal":     _inner_t[_idxs_t[1]],
-                })
+            # 采样连通起终点（有限重试 + fallback，与评估侧统一调用同一 helper）
+            _train_rng = np.random.default_rng(int(env.np_random.integers(0, 2**31)))
+            _start_t, _goal_t = _sample_connected_start_goal(
+                _wall_map_train, grid_size, _train_rng,
+                default_start=env.agent_pos,
+                default_goal=env.goal_pos,
+            )
+            obs, _ = env.reset(options={
+                "wall_map": _wall_map_train,
+                "start":    _start_t,
+                "goal":     _goal_t,
+            })
         else:
             obs, _ = env.reset()
         state: np.ndarray = obs.astype(np.float32)
