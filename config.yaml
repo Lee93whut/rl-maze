@@ -1,0 +1,96 @@
+# ─────────────────────────────────────────────
+# Maze Environment Configuration
+# ─────────────────────────────────────────────
+maze:
+  grid_size: 10
+  obstacle_density: 0.25
+  max_steps: 200
+  # seed 字段已移除：正常训练地图随机多样化，保证泛化能力。
+  # 需固定地图时请使用 overfit 节或显式调用 env.reset(seed=X)。
+
+# ─────────────────────────────────────────────
+# Reward shaping
+# ─────────────────────────────────────────────
+rewards:
+  goal:       100
+  wall_hit:   -10
+  step:        -1
+  distance_shaping_alpha: 0.5   # 距离 shaping 系数；0 = 关闭
+                                # 每步额外奖励 = alpha × (上一步曼哈顿距离 - 当前曼哈顿距离)
+  revisit_penalty: 0.0          # 已移至状态层：visited_map 第4通道编码访问历史（Markov-correct）
+                                # 奖励层 revisit_penalty 违反马尔可夫性，已弃用
+
+# ─────────────────────────────────────────────
+# DQN Training Hyperparameters
+# ─────────────────────────────────────────────
+dqn:
+  # ── Reproducibility ──────────────────────────
+  seed: 42
+
+  # ── Algorithm variant ─────────────────────────────────────────────────
+  # vanilla        : DQNNetwork    + Vanilla Target   (Mnih et al., 2015)
+  # double         : DQNNetwork    + Double DQN       (van Hasselt et al., AAAI 2016)  ← 最优（R3 Holdout 74%）
+  # dueling        : DuelingDQN    + Vanilla Target   (Wang et al., 2016)
+  # double_dueling : DuelingDQN    + Double DQN       (两项改进正交叠加)
+  algorithm: "double"
+
+  # ── Replay Buffer ────────────────────────────
+  buffer_capacity: 80000      # max transitions stored (deque maxlen)
+                              # r2=20000 约 250 局轮换，成功样本快速消失，r3 起扩至 80000（约 1000 局）
+  batch_size: 64              # SGD mini-batch size
+
+  # ── Training schedule ────────────────────────
+  num_episodes: 5000          # total training episodes
+                              # r1=2000 时曲线未收敛，r2 起调整为 6000
+                              # r4 起改为 5000：R3 峰值在 ep=3750，5000 有余量且节省时间
+  learning_rate: 0.0005
+  gamma: 0.99                 # discount factor
+
+  # ── ε-greedy exploration ─────────────────────
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay: 0.9985       # multiplicative decay per episode (after warmup)
+                              # r1=0.995 导致 ep≈800 探索触底，后 1200 ep 样本多样性枯竭
+                              # r2 起调整为 0.9985，ep≈2189 才触底，覆盖完整有效训练期
+
+  # ── Target network sync ──────────────────────
+  target_update_freq: 1500    # hard-copy every N gradient update steps
+                              # r2=500 随机起终点 Q 方差大，同步过频导致目标漂移；r3 起调整为 1500
+
+  # ── Episode-based warmup ─────────────────────
+  warmup_episodes: 200        # first N episodes: pure random (ε=1.0), no grad updates
+
+  # ── TensorBoard three-category logging ───────
+  eval_every: 100             # Evaluation_Exam/ frequency (episodes)
+                              # r4 从 50 改为 100，减少 EVAL 开销，加速训练（节省约 20%）
+  num_test_mazes: 50          # blind test mazes per evaluation
+
+  # ── Logging & saving ─────────────────────────
+  log_dir: "runs"             # TensorBoard log root
+  save_dir: "results"         # directory for best_model.pth
+  success_window: 100         # rolling window for success-rate metric
+  save_window: 50             # rolling window for best-model save trigger
+  print_every: 10             # console print frequency (episodes)
+
+  # ── Start / Goal position ─────────────────────
+  # false（默认）：固定起点 (1,1)、终点 (N-2,N-2)，与现有训练模型兼容
+  # true          ：每局随机选取起终点，评估也随机化，需重新训练模型
+  random_start_goal: true
+
+# ─────────────────────────────────────────────
+# Overfit (debug) mode  —  5×5 tiny maze
+# ─────────────────────────────────────────────
+overfit:
+  grid_size: 5
+  obstacle_density: 0.0       # no random obstacles → deterministic map
+  max_steps: 50
+  seed: 0
+  num_episodes: 500
+  epsilon_decay: 0.990
+  warmup_episodes: 50         # shorter warmup for overfit debug
+  batch_size: 32
+  target_update_freq: 100
+  eval_every: 50
+  num_test_mazes: 10
+  print_every: 50
+  algorithm: "double_dueling"
