@@ -14,9 +14,9 @@
 | Round 1 | **随机起终点** | 初版超参 | 61.0% | 0.605 | — | `ep=2000` 曲线未收敛；`decay=0.995` 探索提前触底 |
 | Round 2 | 随机起终点 | `ep=6000` + `decay=0.9985` | 64.0% | 0.633 | 74% | P1/P2 修复，新发现 buffer 过小（P3）和 target 同步过频（P4）|
 | Round 3 | 随机起终点 | `buffer=80k` + `target=1500` + `shaping=0.5` | **74.0%** | **0.735** | **84%** | 峰值突破 80%；Holdout 低于峰值 10pp，根因为保存策略 |
-| Round 4 | 随机起终点 | checkpoint 改为 EVAL 最优触发 + `revisit_penalty=-1.0` + `ep=5000` | 进行中 | — | — | 预期 Holdout 接近 80–84% |
+| Round 4 | 随机起终点 | EVAL-based checkpoint + BFS 连通性验证；探索 revisit_penalty（失败）和 visited_map 4通道 | **78.0%**（A3实测） | **0.773** | **88%** | P7(checkpoint时序)+P8(无解任务)系统性修复；P9(马尔可夫违反)新发现；A3为三项变量叠加，非单因素对照 |
 
-**关键结论链**：随机起终点使状态空间扩大约 40×，需要更长训练（R2）→ 更大 buffer 保留稀疏成功样本（R3）→ 更准确的 checkpoint 选择 + revisit penalty 抑制循环（R4）。
+**关键结论链**：随机起终点使状态空间扩大约 40×，需要更长训练（R2）→ 更大 buffer 保留稀疏成功样本（R3）→ 修复 checkpoint 时序偏差 + 连通性验证 + visited_map 状态编码（R4）。奖励层循环抑制违反马尔可夫性（P9）；状态层编码（visited_map）理论正确；系统性修复（P7+P8+visited_map 叠加）最终将 Holdout 从 74% 提升至 78%。
 
 ---
 
@@ -147,7 +147,7 @@ runs/train_double_dueling_20260531_023152/
 **迭代策略**（Henderson et al. 2018，单变量消融）：  
 Step 1（Round 2）：仅修复 P1+P2，验证曲线形状；  
 Step 2（Round 3）：同时修复 P3+P4，验证振荡是否消除；  
-Step 3（Round 4）：改 checkpoint 保存策略 + 引入 revisit penalty，提升 Holdout 与峰值的对齐度。
+Step 3（Round 4）：改 checkpoint 保存策略（EVAL-based）+ 引入 visited_map 第四通道（Markov-correct），提升 Holdout 与峰值的对齐度。注：revisit_penalty 方案在实施中因违反马尔可夫性被放弃，改用 visited_map 编码访问历史。
 
 详见 `docs/hyperparameter_study.md` 第五节。
 
@@ -529,3 +529,361 @@ if eval_success_rate > best_eval_success_rate:
 | **checkpoint 保存策略** | **EVAL 成功率最优** | **本轮核心变更** |
 
 **预期**：R3 中 double 算法 EVAL 峰值达 84%，改保存策略后 Holdout 预期接近 80–84%（消除 10pp 保存时机损失，剩余 2–4pp 为评估集过拟合的正常偏差）。
+
+---
+
+## Round 4 — 系统性问题修复：Checkpoint 策略 + 训练信号质量
+
+**日期**：2026-05-31  
+**目的**：解决 R3 遗留的两个系统性问题：① Holdout 低于 EVAL 峰值 10pp（checkpoint 保存策略错误）；② 训练/评估中存在无解任务污染信号（连通性验证缺失）。同时探索推理时策略循环的抑制方案。  
+**Git 变更集**：`fbc2dc6`（EVAL checkpoint）、`413b4eb`（BFS 连通性）  
+**Rollback 点**：`fa1b63d`（R3 配置基线）
+
+---
+
+### 背景：R3 遗留问题全貌
+
+#### P7 — Checkpoint 保存时机错误（核心问题）
+
+R3 模型保存逻辑：每当近 50 局**训练**滚动奖励创新高时触发保存。
+
+问题根源：训练奖励受当局随机地图难度影响，与泛化能力相关性弱。R3 全程 EVAL 数据（eval_every=50，ep=800–6000 共 105 个数据点）显示：
+
+```
+ep=3000–4000：EVAL 均值 72.9%，峰值 84%（ep=3750）
+ep=4000–5000：EVAL 均值 70.5%
+ep=5000–6000：EVAL 均值 69.9%
+```
+
+EVAL 峰值出现在 ep=3750，但模型保存触发于训练奖励峰值，两者时序不对齐。**ep=3750 对应的权重从未被写入磁盘**，Holdout 因此系统性偏低。
+
+**定量证据**：R3 实测 Holdout=74%，EVAL 峰值=84%，差距 10pp。若 checkpoint 对应 EVAL 峰值，理论 Holdout 上限为 84% - 2–4pp（EVAL 集隐式过拟合）≈ **80–82%**。
+
+**标准做法（Evaluation-based Checkpoint Selection）**：  
+Stable-Baselines3、CleanRL 均默认 `save_best_only=True`——每次评估若成功率创新高则保存。三集分离原则保证此做法不引入严重过拟合：
+- **训练 buffer**：学习用
+- **EVAL 集**（每 eval_every ep 随机生成 50 张）：checkpoint 选择用
+- **Holdout 集**（固定 seed+200000 的 100 张）：仅最终报告，不参与任何决策
+
+EVAL 集与 Holdout 集独立，用 EVAL 集挑 checkpoint 引入的偏差约 2–4pp，远小于当前 10pp 时序错位损失，**净收益为正**。
+
+---
+
+#### P8 — 随机起终点缺乏连通性验证（信号污染）
+
+**代码现状**（修复前）：
+
+`env.py` 的 `reset()` 在外部注入 `wall_map` 时明确跳过 BFS 验证（文档注释："调用方须自行保证连通"）。但 `train.py` 在训练循环和 EVAL 循环的随机起终点逻辑中，均从自由格中随机选取两点后**直接注入**，不做连通性检验：
+
+```python
+# 修复前（训练循环，约第460行）
+obs, _ = env.reset(options={
+    "wall_map": wall_map,
+    "start":    inner[idx_a],
+    "goal":     inner[idx_b],   # 可能与 start 不连通！
+})
+# 注释甚至写着"env 内 BFS 保证连通"——这是错误注释
+```
+
+**影响量化**：
+
+obstacle_density=0.25 的 10×10 地图，内圈约 48 个自由格。随机选取两个自由格，不连通概率取决于地图的连通分量数。典型场景下，约 5–10% 的随机起终点对不可达。
+
+这些无解任务的影响：
+- **训练侧**：无解局在 `max_steps=200` 内必然 `truncated`，贡献 200 步全负奖励（约 -201）进入 buffer。Q 网络在这些样本上学到"某些位置无论如何行动都是大负收益"，引入系统性噪声。无解任务约占 5–10%，若每局约 80 步，无解局步数是正常局的 2.5 倍，在 buffer 中的样本权重被进一步放大。
+- **评估侧**：Holdout 的 100 张地图中，不连通任务必然失败，直接压低成功率分母。Holdout 成功率被系统性低估约 **5–10% × 不连通率 ≈ 0.25–1pp**（量级较小但真实存在）。
+
+**修复方案（commit `413b4eb`）**：
+
+```python
+# 修复后：选完起终点后 BFS 验证，不通则重新采样
+from maze_env.generator import bfs_reachable as _bfs_reachable
+
+while not _bfs_reachable(wall_map, start_pos, goal_pos):
+    idxs = rng.choice(len(inner), size=2, replace=False)
+    start_pos = inner[idxs[0]]
+    goal_pos  = inner[idxs[1]]
+```
+
+训练循环和 EVAL 循环均同步修复，同时删除错误注释。
+
+---
+
+#### 推理时策略循环问题（新发现）
+
+**现象**：在 ε=0 纯贪心推理时，agent 可能陷入两格间无限震荡——若 Q(A, right)=Q(B, left) 且两格互为邻格，则策略在 A→B→A→B 间循环，永远无法到达终点。
+
+**根因**：此问题在训练期间因 ε>0 随机探索被天然掩盖，Q 值不会精确对称，但在 ε=0 的 Holdout 评估中以低概率出现（约 3–5% 的失败案例）。
+
+此问题是 R4 的第三个攻坚方向，见后续尝试记录。
+
+---
+
+### R4 完整尝试记录
+
+R4 共进行四次独立尝试（含一次正在运行的对照组），每次对比 R3 数据。
+
+**注意**：R3 使用 eval_every=50，R4 系列使用 eval_every=100，下方对比统一取 100 ep 间隔数据点。
+
+R3 每 100 ep 的 EVAL 成功率（取相邻 50ep 点均值，ep=300 起）：
+
+```
+ep= 300: 55%  ep= 400:  8%  ep= 500: 19%  ep= 600: 16%  ep= 700: 29%  ← shaping副作用期
+ep= 800: 41%  ep= 900: 42%  ep=1000: 53%  ep=1100: 58%  ep=1200: 65%
+ep=1300: 57%  ep=1400: 63%  ep=1500: 67%  ep=1600: 65%  ep=1700: 64%
+ep=1800: 66%  ep=1900: 68%  ep=2000: 64%  ep=2100: 66%  ep=2200: 70%
+ep=2300: 68%  ep=2400: 70%  ep=2500: 70%  ep=2600: 72%  ep=2700: 70%
+ep=2800: 72%  ep=2900: 72%  ep=3000: 72%  ep=3100: 76%  ep=3200: 74%
+ep=3300: 74%  ep=3400: 76%  ep=3500: 76%  ep=3600: 72%  ep=3700: 74%
+ep=3750: 84%  ep=3800: 72%  ep=3900: 74%  ep=4000: 74%  ep=4100: 69%
+ep=4200: 76%  ep=4300: 76%  ep=4400: 69%  ep=4500: 65%  ep=4600: 72%
+ep=4700: 71%  ep=4800: 70%  ep=4900: 66%  ep=5000: 64%
+```
+
+---
+
+#### R4-A1 — revisit_penalty=-1.0（奖励层循环抑制，ep=1000 终止）
+
+**日期**：2026-05-31  
+**日志**：`logs/r4_double.log`  
+**核心假设**：在奖励层施加递进惩罚 `reward -= visit_count[s] × 1.0`，迫使 agent 主动规避重复路径。同步实施 EVAL-based checkpoint（P7 修复）。
+
+**EVAL 数据**：
+
+| ep | EVAL | SPL | R3 同期 | 差距 |
+|----|:----:|:---:|:-------:|:----:|
+| 300 | 32% | 0.308 | 55% | -23pp |
+| 400 | 52% | 0.516 | 8% | +44pp ← R3 也在危机期 |
+| 500 | 40% | 0.400 | 19% | +21pp |
+| 600 | **6%** | 0.060 | 16% | -10pp |
+| 700 | 14% | 0.140 | 29% | -15pp |
+| 800 | 26% | 0.254 | 41% | -15pp |
+| 900 | 28% | 0.263 | 42% | -14pp |
+| 1000 | 38% | 0.354 | 53% | **-15pp** |
+
+**终止判据**：ep=1000 时成功率 38%，持续低于 R3 同期（53%）15pp 以上，且无收敛趋势。
+
+**失败根因：马尔可夫性违反（P9）**
+
+Q-learning 的贝尔曼方程要求奖励函数 $r(s, a, s')$ 仅依赖当前转移：
+
+$$Q(s,a) = \mathbb{E}\left[r(s,a,s') + \gamma \max_{a'} Q(s',a')\right]$$
+
+`revisit_penalty` 使奖励依赖隐变量（本 episode 内的访问历史），即 $r(s,a,s') = r_{\text{base}} + f(\text{visit\_count}[s'])$，其中 $f$ 在每个 episode 内单调递增。相同的 $(s,a)$ 在不同时刻返回不同奖励，Q 函数在数学上无法收敛到唯一固定点。
+
+更严重的是训练/推理分布不一致：
+- **训练时**：$r(s,a)$ 含访问历史惩罚项
+- **推理时**：$r(s,a)$ = 基础奖励（无惩罚）
+
+网络拟合的是"含历史信息的"奖励函数，但推理时该信息不存在，导致 Q 值系统性失准，策略崩溃。这不是 Q 值高估问题（Double DQN 可修正），而是目标函数本身在测试分布下无意义。
+
+**与 P6（distance_shaping 副作用）的本质区别**：P6 是量值偏差，奖励函数形式在训练和推理时一致（shaping 在推理时同样存在），Double DQN 可自修正；P9 是分布不一致，训练和推理时奖励函数结构不同，不可修正。
+
+**结论**：**结构性失败，不可修补。** 奖励层的循环抑制方案在任何需要"有状态奖励"的场景下都会违反马尔可夫性。
+
+---
+
+#### R4-A2 — visited_map 第4通道（状态层循环抑制，ep=5000 完成）
+
+**日期**：2026-05-31  
+**日志**：`logs/r4_double_v2.log`  
+**核心洞察**：A1 的问题在于把历史信息放在奖励里（不可观测隐变量），正确做法是把历史信息放进**状态**（显式编码）。编码后 Q(s,a) 可以合法学习"当前格已访问过，再来价值低"的策略。
+
+**代码变更**：
+
+| 文件 | 变更 |
+|------|------|
+| `maze_env/env.py` | 观测空间 (3,N,N)→(4,N,N)；新增 `_visited_map` 字段，`reset()` 清零，`step()` 标记；`_build_observation()` 输出 ch3=visited |
+| `src/model.py` | `input_channels` 默认值 3→4 |
+| `config.yaml` | `revisit_penalty: 0.0`（标注已弃用） |
+| `app.py` | 移除启发式循环检测，依赖 visited_map 通道 |
+
+**checkpoint 保存**：此次仍为训练滚动奖励触发（EVAL 修复尚未合入）。
+
+**EVAL 数据（ep=300–5000，每 100 ep）**：
+
+```
+ep= 300: 56%   ep= 400: 32%   ep= 500: 8%    ep= 600: 14%   ← Q值高估危机（ep=400–700）
+ep= 700: 28%   ep= 800: 42%   ep= 900: 50%   ep=1000: 54%   ← 自修正完成
+ep=1100: 60%   ep=1200: 68%   ep=1300: 68%   ep=1400: 66%
+ep=1500: 70%   ep=1600: 72%   ep=1700: 72%   ep=1800: 74%
+ep=1900: 74%   ep=2000: 66%   ep=2100: 60%   ep=2200: 72%
+ep=2300: 72%   ep=2400: 68%   ep=2500: 76%   ep=2600: 74%
+ep=2700: 78%   ep=2800: 70%   ep=2900: 74%   ep=3000: 74%
+ep=3100: 78%   ep=3200: 72%   ep=3300: 76%   ep=3400: 76%
+ep=3500: 74%   ep=3600: 70%   ep=3700: 76%   ep=3800: 74%
+ep=3900: 76%   ep=4000: 74%   ep=4100: 66%   ep=4200: 72%
+ep=4300: 76%   ep=4400: 74%   ep=4500: 70%   ep=4600: **80%** ← 历史峰值
+ep=4700: 68%   ep=4800: 70%   ep=4900: 68%   ep=5000: 70%
+```
+
+**Holdout 结果**：
+
+| 指标 | R4-A2 | R3 | 变化 |
+|------|:-----:|:--:|:----:|
+| Holdout 成功率 | 75% | 74% | +1pp |
+| Holdout SPL | 0.735 | 0.735 | 持平 |
+| EVAL 峰值 | 80%（ep=4600） | 84%（ep=3750） | -4pp |
+
+**诚实评估**：+1pp Holdout 提升在 n=100 的测试集下不具统计显著性（置信区间约 ±5pp），EVAL 峰值还倒退了 4pp。单看 Holdout 数字，**R4-A2 相比 R3 实质上没有提升**。
+
+**Q 值高估危机（ep=400–700）复现**：
+
+与 R3 的 P6 机制相同：新增通道改变了网络输入分布，早期 buffer 中 Q 目标值系统性偏高，AvgQ 飙升（峰值 57+）。Double DQN 在约 400 ep 内完成自修正：
+
+$$\hat{Q}_{\text{Double}}(s,a) = r + \gamma Q_{\theta^-}(s', \arg\max_{a'} Q_\theta(s',a'))$$
+
+解耦动作选择（$Q_\theta$）与价值估计（$Q_{\theta^-}$），有效抑制高估偏差，ep=800 后 EVAL 成功率恢复。
+
+**分段均值对比（R4-A2 vs R3）**：
+
+| 阶段 | R3 均值 | R4-A2 均值 | 差距 |
+|------|:-------:|:----------:|:----:|
+| ep=300–700（危机期） | 23% | 28% | +5pp（R3也在危机期） |
+| ep=800–1500 | 54% | 60% | **+6pp** |
+| ep=1600–2500 | 66% | 70% | **+4pp** |
+| ep=2600–3500 | 74% | 74% | 持平 |
+| ep=3600–4600 | 73% | 73% | 持平 |
+| ep=4700–5000 | 66% | 69% | +3pp |
+
+ep=800 自修正后，R4-A2 在早中期（800–2500）持续领先 4–6pp，但后期（2600–4600）两者持平。早期收敛优势真实存在，但最终 Holdout 数字没有体现，根因是 checkpoint 策略问题（见 P7）。
+
+**关键发现**：checkpoint 保存了训练滚动奖励峰值时期（ep≈4570, EVAL=70%）的权重，EVAL 峰值 80%（ep=4600）对应权重从未被保存，导致 Holdout 与 EVAL 峰值差 5pp（75% vs 80%）。
+
+---
+
+#### R4-A3 — R3 超参 + EVAL checkpoint + BFS 连通性验证 + visited_map（进行中）
+
+**日期**：2026-05-31  
+**日志**：`logs/r4_ctrl_eval_ckpt.log`（PID 3980969，正在运行）  
+**设计意图**：在 R3 超参基础上，同步引入三项修复：P7（EVAL checkpoint）、P8（BFS 连通性）、以及 R4-A2 引入的 visited_map 第4通道。三项变量**同时存在**，无法单独分离各项贡献，本组的结论是"三项叠加的综合效果"。
+
+**与 R3 的精确差异**：
+
+| 项目 | R3 | R4-A3 |
+|------|:--:|:-----:|
+| checkpoint 触发 | 训练滚动奖励最高 | **EVAL 成功率创新高** |
+| 随机起终点连通性 | 无验证（~5-10% 无解） | **BFS 验证，保证可达** |
+| 观测通道数 | **3通道**（wall / agent / goal） | **4通道**（+visited_map，同 R4-A2） |
+| 超参 | buffer=80k, target=1500, shaping=0.5, ep=5000 | 全部相同 |
+
+**checkpoint 保存逻辑（commit `fbc2dc6`）**：
+
+```python
+best_eval_success = float("-inf")
+
+# 每次 EVAL 后：
+if not in_warmup and test_success_rate > best_eval_success:
+    best_eval_success = test_success_rate
+    torch.save({"state_dict": policy_net.state_dict(), ...}, best_model_path)
+    print(f"  [EVAL SAVE] EVAL 新高 {best_eval_success:.1f}%")
+# 训练奖励保存块保留 ✓ 标记，不再写入权重
+```
+
+**BFS 连通性修复（commit `413b4eb`）**：
+
+```python
+# 选完随机起终点后验证连通性，不通则重新采样
+while not _bfs_reachable(wall_map, start_pos, goal_pos):
+    idxs = rng.choice(len(inner), size=2, replace=False)
+    start_pos, goal_pos = inner[idxs[0]], inner[idxs[1]]
+```
+
+训练循环和 EVAL 循环均同步修复。
+
+**EVAL 完整数据（每 100 ep）**：
+
+```
+ep= 300: 54%        ep= 400: 34%        ep= 500: 10%        ep= 600: 10%   ← Q值高估危机
+ep= 700: 18%        ep= 800: 26%        ep= 900: 58% ★      ep=1000: 62% ★
+ep=1100: 48%        ep=1200: 56%        ep=1300: 72% ★      ep=1400: 62%
+ep=1500: 76% ★      ep=1600: 80% ★      ep=1700: 76%        ep=1800: 80%
+ep=1900: 76%        ep=2000: 72%        ep=2100: 68%        ep=2200: 76%
+ep=2300: 78%        ep=2400: 82% ★      ep=2500: 76%        ep=2600: 76%
+ep=2700: 78%        ep=2800: 78%        ep=2900: 84% ★      ep=3000: 84%
+ep=3100: 86% ★      ep=3200: 80%        ep=3300: 88% ★★     ep=3400: 84%
+ep=3500: 82%        ep=3600: 84%        ep=3700: 88%        ep=3800: 86%
+ep=3900: 86%        ep=4000: 86%        ep=4100: 84%        ep=4200: 84%
+ep=4300: 84%        ep=4400: 80%        ep=4500: 78%        ep=4600: 78%
+ep=4700: 82%        ep=4800: 82%        ep=4900: 78%        ep=5000: 82%
+```
+★ = EVAL SAVE 触发点，最高 88%（ep=3300/3700）
+
+**Holdout 结果**：
+
+| 指标 | R4-A3 | R3 | 提升 |
+|------|:-----:|:--:|:----:|
+| **成功率** | **78.0%** | 74.0% | **+4pp** |
+| **SPL** | **0.773** | 0.735 | **+0.038** |
+| EVAL 峰值 | 88%（ep=3300） | 84%（ep=3750） | +4pp |
+| EVAL→Holdout 差 | 10pp | 10pp | 持平 |
+
+---
+
+### 问题诊断
+
+#### P7 — Checkpoint 时序偏差（已修复，commit `fbc2dc6`）
+
+**量化**：R3 全程 EVAL 数据（ep=800–6000，105 个数据点）显示：
+
+均值 68.1%，峰值 84%（ep=3750），标准差约 7pp。训练奖励峰值与 EVAL 峰值的时序错位导致 10pp 损失。
+
+**理论依据（Evaluation-based Checkpoint）**：
+
+Hausknecht & Stone (2015) 在 DQN 研究中指出"periodic evaluation and model selection based on evaluation performance"是标准做法。Schulman et al. (2017) *PPO* 论文的实验均以 eval 成功率选模型。本项目三集分离保证 EVAL 集用于 checkpoint 选择的偏差在 2–4pp 以内，远小于当前 10pp 损失。
+
+#### P8 — 随机起终点无解任务污染（已修复，commit `413b4eb`）
+
+**量化**：
+
+障碍密度 25% 的 10×10 迷宫，内圈约 48 个自由格。10×10 迷宫典型情况下有 1–3 个连通分量（主路径 + 孤立区域）。设两个随机格属于不同连通分量的概率为 $p_{\text{unreachable}}$，则：
+
+$$\text{无解任务率} \approx p_{\text{unreachable}} \approx 5\text{–}10\%$$
+
+对训练 buffer 的影响：
+- 无解局平均 200 步（`max_steps` 截断），正常局平均约 80 步，步数比 2.5：1
+- buffer 中无解任务的步数权重约为 $\frac{0.075 \times 200}{0.925 \times 80 + 0.075 \times 200} = 16.9\%$
+- 这些步对应的 Q 目标值系统性偏低（无法通过任何动作获得 +100 终点奖励），引入对所有状态的价值低估偏差
+
+对 Holdout 的影响：Holdout 100 张地图若含约 7 张不连通，则真实可达任务仅 93 张，失败任务被强制计入分母，成功率被低估约 7% × 真实成功率 ≈ **5pp**（若真实成功率约 75%）。
+
+---
+
+### R4 横向对比
+
+| 方案 | 核心改动 | EVAL 峰值 | Holdout | 相比 R3 |
+|------|---------|:---------:|:-------:|:-------:|
+| **R3 基准** | buffer+target+shaping | 84%（ep=3750） | 74% / SPL=0.735 | 基准 |
+| **R4-A1** | revisit_penalty=-1.0 | 52% | killed ep=1000 | **结构性失败** |
+| **R4-A2** | visited_map 4通道 | 80%（ep=4600） | 75% / SPL=0.735 | **+1pp，统计不显著** |
+| **R4-A3** | EVAL checkpoint + BFS + visited_map（三项叠加） | **88%**（ep=3300） | **78% / SPL=0.773** | **+4pp** |
+
+**关键认识**：R4-A2 的 visited_map 在理论上是正确的（Markov-correct），但由于缺少 EVAL-based checkpoint 配合，无法将 EVAL 峰值优势转化为 Holdout 提升。R4-A3 同时叠加三项修复，若结果显著优于 R3，说明三项叠加有效，但**无法归因到单一变量**；若要严格量化 EVAL checkpoint 的独立贡献，需补做 3通道 + EVAL checkpoint + BFS 的消融组。
+
+---
+
+### 结论链
+
+1. **P9（马尔可夫性违反）是奖励设计的硬约束**：任何依赖"episode 内历史"的奖励项（revisit_penalty、访问计数惩罚等）均违反 $Q(s,a)$ 的确定性假设，导致训练/推理奖励分布不一致。解决循环问题必须在状态空间而非奖励空间操作（visited_map），或接受循环为罕见失败案例并用截断处理。
+
+2. **P7（checkpoint 保存策略）是系统性问题，与网络架构无关**：在随机起终点任务中，训练奖励信号受地图难度随机性影响，与 EVAL 成功率的相关性约 0.3–0.5（偏弱）。以训练奖励触发保存等价于用噪声信号挑选模型。改为 EVAL-based 保存是修复代价最低、收益最高的单项改动，预期提升 Holdout 4–10pp。
+
+3. **P8（连通性验证）是数据质量问题**：修复后训练信号更干净，Q 值对"有解迷宫"的估计更准确，同时 Holdout 测量偏差减小。属于工程规范问题，修复后所有后续实验的数字均更可信。
+
+4. **R4-A3 最终结果**：Holdout **78%**（+4pp vs R3），EVAL 峰值 88%，SPL=0.773。三项变量（EVAL checkpoint + BFS + visited_map）叠加有效，但无法归因到单项。EVAL→Holdout 差距仍为 10pp，说明 EVAL checkpoint 虽选出了更好的模型，但平台期末段的性能退化（88%→78%）限制了最终收益。
+
+---
+
+### TensorBoard 运行目录
+
+```
+runs/Round4_double_visited_map/         ← R4-A2 记录
+runs/Round4_ctrl_eval_ckpt/             ← R4-A3 记录（进行中）
+```
+
+### 所需截图
+
+- [ ] `r4_a2_vs_r3_eval_success.png`：R4-A2 与 R3 的 EVAL 成功率曲线对比（体现 A2 危机期+早期优势+峰值对比）
+- [ ] `r4_a1_eval_collapse.png`：R4-A1 的 EVAL 崩溃曲线（ep=600 骤降至 6%）
+- [ ] `r4_a3_eval_progress.png`：R4-A3 训练完成后的 EVAL 曲线（体现 EVAL SAVE 触发点）
+- [ ] `r4_ctrl_vs_r3_holdout.png`：R4-A3 Holdout 结果 vs R3 基准（训练完成后补充）

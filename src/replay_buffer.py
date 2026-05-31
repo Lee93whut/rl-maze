@@ -19,7 +19,7 @@
 * ``action``     : ``int``
 * ``reward``     : ``float``
 * ``next_state`` : ``np.ndarray`` shape ``(4, N, N)`` float32
-* ``done``       : ``bool``  仅 ``terminated``（自然结束）为 True；``truncated``（时间截断）存为 False，保留 bootstrap 价值
+* ``done``       : ``bool``  （terminated OR truncated）
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class Transition(NamedTuple):
     action:     int
     reward:     float
     next_state: np.ndarray   # (4, N, N) float32
-    done:       bool         # terminated only —— truncated 存 False，不屏蔽 bootstrap
+    done:       bool         # terminated | truncated
 
 
 class ReplayBuffer:
@@ -84,9 +84,7 @@ class ReplayBuffer:
             action:     执行的动作编号。
             reward:     获得的即时奖励。
             next_state: 下一步观测，shape ``(4, N, N)``。
-            done:       是否为自然终止（仅传入 ``terminated``）。
-                        ``truncated``（超出 max_steps）应传 False，
-                        使 TD 目标继续 bootstrap next_state 的价值。
+            done:       本步是否为幕终止（terminated | truncated）。
         """
         t = Transition(
             state=state,

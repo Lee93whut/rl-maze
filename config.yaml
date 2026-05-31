@@ -35,7 +35,7 @@ dqn:
   algorithm: "double"
 
   # ── Replay Buffer ────────────────────────────
-  buffer_capacity: 80000      # max transitions stored (deque maxlen)
+  buffer_capacity: 80000      # max transitions stored (ring-list, O(batch_size) sampling)
                               # r2=20000 约 250 局轮换，成功样本快速消失，r3 起扩至 80000（约 1000 局）
   batch_size: 64              # SGD mini-batch size
 

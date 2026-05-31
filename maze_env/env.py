@@ -80,7 +80,7 @@ class MazeEnv(gym.Env):
         >>> env = MazeEnv(grid_size=6, obstacle_density=0.0, seed=0)
         >>> obs, info = env.reset()
         >>> obs.shape
-        (3, 6, 6)
+        (4, 6, 6)
         >>> obs, reward, terminated, truncated, info = env.step(Action.RIGHT)
         >>> info["agent_pos"]
         (1, 2)
@@ -434,7 +434,7 @@ class MazeEnv(gym.Env):
             ch0 — wall_map：墙壁位置（1=墙，0=通路）
             ch1 — agent_map：agent 当前位置（one-hot）
             ch2 — goal_map：终点位置（one-hot）
-            ch3 — visited_map：本 episode 内已访问过的格子（累计，1=访问过）
+            ch3 — visited_map：本 episode 内已访问过的格子（二值，1=到达过，0=未到达）
         """
         N = self.grid_size
         obs = np.zeros((4, N, N), dtype=np.float32)
