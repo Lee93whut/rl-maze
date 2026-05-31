@@ -40,6 +40,7 @@ import yaml
 # ── maze_env 包（已安装，直接导入）──────────────────────────────────────────
 from maze_env import MazeEnv
 from maze_env.bfs import bfs as bfs_solve
+from maze_env.actions import DELTAS
 
 # ── src 包（pip install -e . 后可直接导入）───────────────────────────────────
 import torch.nn as nn
@@ -246,6 +247,16 @@ def dqn_rollout(
         if cnt >= 2:
             action_candidate = int(q_values.argmax().item())
             q_values[action_candidate] -= 3.0 * cnt
+
+        # 对每个动作预判目标格，若目标格也是高频访问格则额外惩罚
+        cur_r, cur_c = cur_pos
+        N = env.grid_size
+        for a, (dr, dc) in enumerate(DELTAS):
+            nr, nc = cur_r + dr, cur_c + dc
+            if 0 <= nr < N and 0 <= nc < N:
+                next_cnt = visited_count.get((nr, nc), 0)
+                if next_cnt >= 2:
+                    q_values[a] -= 3.0 * next_cnt
 
         action = int(q_values.argmax().item())
         visited_count[cur_pos] = cnt + 1
