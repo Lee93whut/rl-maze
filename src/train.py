@@ -148,7 +148,7 @@ def optimize_model(
         if use_double:
             # Double DQN：policy_net 选动作，target_net 估值
             # 解耦"选哪个动作"与"该动作值多少"，消除 max 算子的过估计偏差
-            # (van Hasselt et al., 2015)
+            # (van Hasselt et al., 2016, AAAI)
             next_acts  = policy_net(next_states).argmax(dim=1, keepdim=True)  # (B,1)
             q_next_max = target_net(next_states).gather(1, next_acts).squeeze(1)
         else:
@@ -246,9 +246,11 @@ def run_evaluation(
       使 TensorBoard 曲线的波动能真实反映 AI 能力变化，而非地图难度变化。
     * random_start_goal=True 时，每张地图用派生种子从自由格中随机选取起终点，
       与训练分布保持一致，避免 train/test 分布偏差。
-    * SPL（Success-weighted Path Length，Anderson et al. 2018）：
+    * Grid-SPL（改自 Anderson et al. 2018）：
         SPL = (1/N) × Σ S_i × ℓ*_i / max(ℓ*_i, p_i)
-      其中 S_i∈{0,1} 为成功标志，ℓ*_i 为 BFS 最短步数，p_i 为实际移动步数。
+      其中 p_i 为实际**移动**步数（撞墙原地步不计入），
+      与标准 SPL 的区别：排除撞墙步使 p_i 偏小、SPL 偏高，
+      不可与 HabitatAI 等连续导航 Benchmark 直接比较。
       失败局 S_i=0，整项贡献 0，与主流导航论文定义一致。
     """
     policy_net.eval()
@@ -312,7 +314,7 @@ def run_evaluation(
             # 成功：S_i=1，贡献 ℓ*_i / max(ℓ*_i, p_i)
             # 失败：S_i=0，整项贡献 0.0
             hit_wall_count    = info.get("hit_wall_count", 0)
-            actual_move_steps = ai_steps - hit_wall_count  # p_i：排除撞墙步
+            actual_move_steps = ai_steps - hit_wall_count  # p_i：仅计移动步（Grid-SPL 变体）
 
             if success and actual_move_steps > 0:
                 bfs_result = _bfs(
