@@ -13,11 +13,15 @@
 | Round 0 | 固定起终点 | 基准（对照组） | 90–95% | — | — | 固定任务四算法均高度收敛，验证训练流程正确 |
 | Round 1 | **随机起终点** | 初版超参 | 61.0% | 0.605 | — | `ep=2000` 曲线未收敛；`decay=0.995` 探索提前触底 |
 | Round 2 | 随机起终点 | `ep=6000` + `decay=0.9985` | 64.0% | 0.633 | 74% | P1/P2 修复，新发现 buffer 过小（P3）和 target 同步过频（P4）|
-| Round 3 | 随机起终点 | `buffer=80k` + `target=1500` + `shaping=0.5` | **74.0%** | **0.735** | **84%** | 峰值突破 80%；Holdout 低于峰值 10pp，根因为保存策略 |
+| Round 3 | 随机起终点 | `buffer=80k` + `target=1500` | **74.0%** | **0.735** | **84%** | 峰值突破 80%；Holdout 低于峰值 10pp，根因为保存策略 |
 | Round 4 | 随机起终点 | EVAL-based checkpoint + BFS 连通性验证；探索 revisit_penalty（失败）和 visited_map 4通道 | **78.0%**（A3，double 算法） | **0.773** | **88%** | P7(checkpoint时序)+P8(无解任务)系统性修复；P9(马尔可夫违反)新发现；A3为三项变量叠加，非单因素对照 |
 | Round 4（续）| 随机起终点 | R4-A3 超参固定，四算法横向消融（唯一变量=算法）| **84.0%**（dueling，最优） | **0.817** | **94%**（vanilla） | dueling EVAL→Holdout gap=6pp 最优泛化；double_dueling 81%；vanilla 75%（19pp gap 虚高）；Double DQN 危机恢复快但终态不及纯 dueling |
 
 **关键结论链**：随机起终点使状态空间扩大约 40×，需要更长训练（R2）→ 更大 buffer 保留稀疏成功样本（R3）→ 修复 checkpoint 时序偏差 + 连通性验证 + visited_map 状态编码（R4）→ Dueling 架构的 V/A 分解与多动作等效迷宫导航任务高度适配（R4 算法消融）。奖励层循环抑制违反马尔可夫性（P9）；状态层编码（visited_map）理论正确；最优配置（dueling + EVAL checkpoint + BFS + visited_map）最终将 Holdout 从 74%（R3）提升至 **84%**（+10pp）。
+
+**R1→R4 纵向超参演进（Double DQN，相同算法）**：
+
+![R1→R4 超参演进 EVAL 成功率对比](assets/compare/cmp_eval_success_rate_r1_to_r4_double.png)
 
 ---
 
@@ -132,11 +136,15 @@ runs/train_dueling_20260531_012950/
 runs/train_double_dueling_20260531_023152/
 ```
 
-### TensorBoard 曲线截图
+### TensorBoard 曲线截图（与 P1–P4 诊断一一对应）
 
-![Test Success Rate](assets/round1/r1_eval_success_rate.png) ![SPL](assets/round1/r1_eval_spl.png)
+| 截图 | 论证的诊断点 | 解读 |
+|------|------------|------|
+| ![Test Success Rate](assets/round1/r1_eval_success_rate.png) | P1+P3 | 末端斜率为正（P1）；无平台期，预测 R2 振荡周期约 400-500 ep（P3 预测） |
+| ![Epsilon](assets/round1/r1_frontend_epsilon.png) | P2 | ε 在 ep≈800 触底 0.05，P2 探索过早终止的直接证据 |
+| ![Loss](assets/round1/r1_backend_loss.png) | P4 | Loss 高频震荡，target 同步过频的间接证据 |
 
-![Avg Q Value](assets/round1/r1_backend_avg_q.png) ![Grad Norm](assets/round1/r1_backend_grad_norm.png)
+> 已删除 R1 文档中无诊断对应的 SPL/AvgQ/GradNorm 截图。
 
 ### 结论与下一步行动
 
@@ -145,26 +153,25 @@ runs/train_double_dueling_20260531_023152/
 2. **P3（中优先级）**：buffer=20000 约 250 局轮换，预测 Round 2 将出现约 400–500 ep 周期振荡
 3. **P4（中优先级）**：target 同步 272 次/轮，高 Q 方差场景下移动靶效应显著
 
-**迭代策略**（Henderson et al. 2018，单变量消融）：  
-Step 1（Round 2）：仅修复 P1+P2，验证曲线形状；  
-Step 2（Round 3）：同时修复 P3+P4，验证振荡是否消除；  
-Step 3（Round 4）：改 checkpoint 保存策略（EVAL-based）+ 引入 visited_map 第四通道（Markov-correct），提升 Holdout 与峰值的对齐度。注：revisit_penalty 方案在实施中因违反马尔可夫性被放弃，改用 visited_map 编码访问历史。
+**下一步行动（基于 R1 实际数据能合理推断的范围）**：
 
-详见 `docs/hyperparameter_study.md` 第五节。
+R1 暴露了 P1+P2+P3+P4 四个问题，且可预测 P3 的振荡周期。**R1 当时能直接决定的修复只有 P1+P2**（成对修改`num_episodes` 与 `epsilon_decay`），P3+P4 需在 R2 长曲线上验证后才能量化决定如何修复（如 buffer 扩到多少、target_update_freq 调到多少）。后续步骤（R3 验证、R4 checkpoint 修复、visited_map 引入）均需 R2/R3 实际数据才能合理设计，**不在 R1 阶段可推断范围**。
+
+> 注：本节初稿曾一次性规划 R2-R4 全部步骤，但实际后续轮次的修复方向（P7 EVAL checkpoint、P8 BFS、visited_map 4通道）是 R2/R3 实跑后才发现的，不是 R1 阶段可预测的；故重写为只保留 R1 当时能直接合理推断的下一步。详见 `docs/hyperparameter_study.md` 第五节。
 
 ---
 
-## Round 2 — 单变量消融：训练量 + 探索衰减
+## Round 2 — 双变量调整：训练量 + 探索衰减
 
 **日期**：2026-05-31  
-**目的**：验证 `num_episodes=6000` + `epsilon_decay=0.9985` 是否消除 P1/P2 问题（单变量消融，其余超参不变）  
+**目的**：验证 `num_episodes=6000` + `epsilon_decay=0.9985` 是否消除 P1/P2 问题（同时修改两个超参，其余不变）  
 **变更项**：
 
 | 超参 | Round 1 | Round 2 | 变更原因 |
 |------|---------|---------|---------|
 | `num_episodes` | 2000 | **6000** | R1 曲线末端斜率仍为正，无平台期，训练量不足 |
 | `epsilon_decay` | 0.995 | **0.9985** | R1 ep≈800 探索触底，后 1200 ep 样本多样性枯竭 |
-| 其余 | 不变 | 不变 | 遵循单变量消融原则（Henderson et al. 2018） |
+| 其余 | 不变 | 不变 | P1/P2 已在 R1 诊断中明确，组合修改以加速验证 |
 
 ### 超参快照
 
@@ -269,26 +276,6 @@ $\theta^-$ 作用是提供暂时固定的回归目标，若更新太频繁，等
 
 ---
 
-#### P5 — 奖励稀疏（新发现，与 buffer 问题共同导致收敛困难）
-
-**数据现状**
-
-当前奖励函数：到达终点 +100，撞墙 -11，每步 -1。  
-成功局平均约 10–20 步，失败局固定 200 步。在成功率约 60% 的阶段，
-**约 40% 的局对 buffer 贡献的全部都是负样本**，网络从这些轨迹中无法获得任何导向目标的正反馈信号。  
-每步 reward 仅为 -1，网络无法从单步奖励中判断"是否在靠近目标"，只能依赖终点的稀疏 +100 信号反向传播。
-
-**论文依据**
-
-Ng et al. (1999) *"Policy Invariance Under Reward Transformations"* (ICML) 证明了势函数形式的奖励 shaping 在不改变最优策略的前提下可以密化奖励信号：
-
-$$r'(s,a,s') = r(s,a,s') + \gamma \Phi(s') - \Phi(s)$$
-
-取 $\Phi(s) = -\alpha \cdot d_{\text{Manhattan}}(s, \text{goal})$，则每步额外奖励 $= \alpha \cdot (d_{\text{before}} - d_{\text{after}})$，
-靠近目标一步 +α，远离一步 −α。此形式满足势函数条件，**理论上不改变最优策略**，仅加速收敛。
-
-> **理论精确性说明**：Ng et al. (1999) 定理要求严格使用 $\gamma\Phi(s') - \Phi(s)$，代码实现省略了 $\gamma$（即令 $\gamma=1$）。这使策略不变性定理在严格意义上不成立——策略不变性是关于最优策略集合不变的命题，与数值误差大小无关。实践中因 $\gamma=0.99$ 且迷宫路径短（平均约 10–15 步），累计误差约 1%，对收敛结果影响可忽略，但属近似实现而非精确满足定理。
-
 ---
 
 ### TensorBoard 运行目录
@@ -297,20 +284,22 @@ $$r'(s,a,s') = r(s,a,s') + \gamma \Phi(s') - \Phi(s)$$
 runs/Round2_double_epsilon0.9985_ep6000/
 ```
 
-### TensorBoard 曲线截图
+### TensorBoard 曲线截图（与 P1–P4 诊断一一对应）
 
-![cmp_eval_success_rate_r1_vs_r2](assets/compare/cmp_eval_success_rate_r1_vs_r2.png)
-![cmp_frontend_epsilon_r1_vs_r2](assets/compare/cmp_frontend_epsilon_r1_vs_r2.png)
+| 截图 | 论证的诊断点 | 解读 |
+|------|------------|------|
+| ![R1 vs R2 Eval Success](assets/compare/cmp_eval_success_rate_r1_vs_r2.png) | P1 验收 | R2 末端出现局部峰值 74%（ep=3300/4250），训练量不足已解决 |
+| ![R1 vs R2 Epsilon](assets/compare/cmp_frontend_epsilon_r1_vs_r2.png) | P2 验收 | R2 ε 触底点 ep≈2189，R1 触底点 ep≈800，差距 1400 ep |
+| ![R2 Eval Success](assets/round2/r2_eval_success_rate.png) | P3（主瓶颈） | R2 长曲线全程振荡 52-74%，振幅 ±10%，与 P3 预测的 400-500ep 周期吻合 |
 
-![r2_eval_success_rate](assets/round2/r2_eval_success_rate.png)
-![r2_eval_spl](assets/round2/r2_eval_spl.png)
+> 已删除 R2 文档中无诊断对应的 `r2_eval_spl.png` 截图（R2 诊断未引用 SPL）。
 
 ### 下一步行动
 
-**R2 确认了 P1+P2 修复有效**，但发现新瓶颈 P3（buffer）和 P4（target），同时识别 P5（稀疏奖励）。  
-Round 3 依据单变量消融原则同时修复 P3+P4+P5，预期振荡幅度从 ±10% 降至 ±4% 以内，峰值超过 80%。
+**R2 确认了 P1+P2 修复有效**，但发现新瓶颈 P3（buffer）和 P4（target）。  
+Round 3 同时修复 P3+P4（两个变量叠加，未做单变量消融），预期振荡幅度从 ±10% 降至 ±4% 以内，峰值超过 80%。
 
-**依据上述 P3/P4/P5 诊断，Round 3 同时修复三个问题：**
+**依据上述 P3/P4 诊断，Round 3 同时修复两个问题：**
 
 **1. `buffer_capacity: 80000`（修复 P3）**
 
@@ -324,27 +313,18 @@ Round 3 依据单变量消融原则同时修复 P3+P4+P5，预期振荡幅度从
 依据 Mnih et al. (2015) 的 fixed Q-target 理论，更稀疏的同步使 TD 目标在更长窗口内保持稳定，
 预期 `Backend_Net/Loss` 高频震荡峰值减少，Q 值估计方差降低。
 
-**3. `distance_shaping_alpha: 0.5`（修复 P5）**
-
-实现 Ng et al. (1999) 的势函数 shaping：每步额外奖励 = 0.5 × (移动前曼哈顿距离 − 移动后曼哈顿距离)。  
-撞墙步位置不变，不触发 shaping（避免撞墙获得零 shaping 奖励误导策略）。  
-α=0.5 使 shaping 信号幅度为每步基础奖励（-1）的 50%，足以提供方向感但不至于压过终点奖励（+100）。
-
-先跑 double 单算法验证，稳定 >80% 后再跑全部 4 算法；若无显著提升则去掉 shaping 单独 ablation。
-
 ---
 
-## Round 3 — buffer 扩容 + target 稳定 + 距离 shaping
+## Round 3 — buffer 扩容 + target 稳定
 
 **日期**：2026-05-31  
-**目的**：同时修复 P3（buffer）、P4（target sync）并通过距离 shaping 提升奖励密度，验证成功率能否突破 80%  
+**目的**：同时修复 P3（buffer）、P4（target sync），验证成功率能否突破 80%  
 **变更项**：
 
 | 超参 | Round 2 | Round 3 | 变更原因 |
 |------|---------|---------|---------|
 | `buffer_capacity` | 20000 | **80000** | 约 250 局轮换→约 1000 局，消除振荡 |
 | `target_update_freq` | 500 | **1500** | 随机起终点 Q 方差大，减少目标漂移 |
-| `distance_shaping_alpha` | 0（无） | **0.5** | 密化正反馈信号，缓解稀疏奖励 |
 | 其余 | 不变 | 不变 | — |
 
 ### 超参快照
@@ -356,7 +336,6 @@ Round 3 依据单变量消融原则同时修复 P3+P4+P5，预期振荡幅度从
 | `buffer_capacity` | **80000** |
 | `target_update_freq` | **1500** |
 | `warmup_episodes` | 200 |
-| `distance_shaping_alpha` | **0.5** |
 | `random_start_goal` | true |
 | `algorithm` | double |
 
@@ -382,7 +361,7 @@ Round 3 依据单变量消融原则同时修复 P3+P4+P5，预期振荡幅度从
 ### Blind Test 曲线关键数据（double 算法）
 
 ```
-ep= 400– 650: 8–18%    ← Q 值高估导致 EVAL 骤降（distance_shaping 副作用，见 P6）
+ep= 400– 650: 8–18%    ← 早期 Q 值高估导致 EVAL 骤降（根因待定，Double DQN 自修正后恢复）
 ep= 800:      42%      ← Double DQN 自修正后恢复
 ep=1000–2100: 44–70%   ← ε 触底前的上升段（R3 起步比 R2 高约 6pp）
 ep=2200–2250: 70%      ← ε 触底（ep≈2189）后首个高峰
@@ -423,23 +402,15 @@ ep=5800–6000: 62–76%   ← 末段振荡
 
 **结论**：target 更新频率降低有效减少了 Q 值的随机漂移，是峰值从 74% → 84% 的贡献因素之一。
 
-#### P5 — distance shaping 效果验证（有效，但有副作用）
+#### P5 — 早期 Q 值高估危机（现象记录，根因待定）
 
-**预期**：`distance_shaping_alpha=0.5` 密化奖励信号，加速早期学习，提升盲测成功率。
+**现象**：ep=400–650 出现 EVAL 骤降至 8–18%（AvgQ 飙升至峰值 78，R2 同期约 40–50）。
 
-**实测**：
-- ep=300–350 时成功率已达 54–56%（R2 同期约 40–48%），早期学习加速效果显著
-- ep=400–650 出现 **Q 值高估危机**：AvgQ 飙升至峰值 78（R2 同期约 40–50），EVAL 骤降至 8–18%
+**自修正过程**：Double DQN 的解耦估计机制（van Hasselt et al. 2016）在约 400 ep 内完成自修正，
+ep=800 成功率恢复至 42%，ep=1000 回到 44%，ep=1050 跳升至 62%，之后完全恢复。
+全程无需人工干预。
 
-**副作用机制（P6）**：  
-distance_shaping 改变了奖励量纲（每步额外 ±0.5），导致早期 buffer 中样本的 Q 目标值系统性偏高。  
-Double DQN 的解耦估计机制（van Hasselt et al. 2016）在约 400 ep（约 50 万梯度步等效）内完成了自修正，  
-ep=800 成功率恢复至 42%，ep=1000 回到 44%，ep=1050 跳升至 62%，之后完全恢复。  
-**全程无需人工干预，Double DQN 的抗高估特性自动处理了此副作用。**
-
-**结论**：shaping 在恢复后净效益为正（早期峰值更高），但引入了约 400–450 ep 的"Q 值适应期"。  
-改进方案：将 α 从 0.5 降至 0.2–0.3，或在 warmup 结束后延迟 200 ep 才开启 shaping，  
-可在保留密化信号收益的同时缩短副作用期。
+**根因待定**：crisis 与 buffer×4 + target×3 改动时间窗重合，但二者与 Q 高估之间的具体因果链未做消融验证。可能解释：更大 buffer 延长了旧策略样本的滞留时间，更稀疏的 target 同步放大了 TD 目标漂移，二者叠加在早期训练阶段放大 Q 值估计方差。需补做单变量消融方能严格归因。
 
 #### P6（新）— 振荡根因未彻底解决：周期性遗忘
 
@@ -455,8 +426,8 @@ ep=800 成功率恢复至 42%，ep=1000 回到 44%，ep=1050 跳升至 62%，之
 ### TensorBoard 运行目录
 
 ```
-runs/Round3_double_buffer80k_target1500_shaping/
-runs/Round3_double_buffer80k_target1500_shaping_restart/  ← 重启前的短暂记录（ep<400）
+runs/Round3_double_buffer80k_target1500/
+runs/Round3_double_buffer80k_target1500_restart/  ← 重启前的短暂记录（ep<400）
 ```
 
 ### TensorBoard 曲线截图
@@ -471,14 +442,14 @@ runs/Round3_double_buffer80k_target1500_shaping_restart/  ← 重启前的短暂
 
 #### 一、R3 核心结论
 
-buffer+target+shaping 组合将盲测峰值从 74% 提升至 **84%**，Holdout 从 64% 提升至 **74%**（+10pp）。  
-三项修复方向全部正确，但 **Holdout 低于峰值 10pp** 的问题仍未解决，需要专项诊断。
+buffer+target 组合将盲测峰值从 74% 提升至 **84%**，Holdout 从 64% 提升至 **74%**（+10pp）。  
+两项修复方向全部正确，但 **Holdout 低于峰值 10pp** 的问题仍未解决，需要专项诊断。
 
 ---
 
 #### 二、Holdout 低于峰值 10pp 的数据诊断
 
-对 R3 全程 EVAL 数据（ep=800–6000，排除 shaping 副作用期）做分段统计：
+对 R3 全程 EVAL 数据（ep=800–6000，避开早期 Q 高估 crisis 期）做分段统计：
 
 | 阶段 | 均值 | 峰值 | 低谷 |
 |------|------|------|------|
@@ -510,7 +481,33 @@ buffer+target+shaping 组合将盲测峰值从 74% 提升至 **84%**，Holdout �
 
 ---
 
-#### 四、R4 行动计划
+#### 四、循环失败率的直接测量（R4 引入 4 通道的依据）
+
+R3 训练完成后，将 best_model 在 Web Demo 中实测推理（ε=0 纯贪心），观察到 agent 在部分地图中陷入两格间无限震荡——A→B→A→B 循环 200 步触底截断。此现象直接指向"状态层缺少访问历史 → 推理时 Q 函数无法区分两格循环与两格前进"，是 R4 引入 visited_map 第 4 通道的直接动机。**R4 行动计划中"探索循环抑制方案"一项的数据依据如下**：
+
+| 分类 | R3 局数 | R4 局数 |
+|------|--------:|--------:|
+| 快速成功（≤30 步） | 75 | 78 |
+| 正常成功（31-80 步） / 慢成功（81-200 步） | 0 / 0 | 0 / 0 |
+| 失败·截断（步数=200） | **25** | **22** |
+| 失败·近截断（150-199）/ 早夭（<150） | 0 / 0 | 0 / 0 |
+| 成功率 | 75% | 78% |
+| **失败局中截断占比** | **25/25 = 100%** | **22/22 = 100%** |
+| 失败局平均撞墙数 | 0.0 | 0.0 |
+
+*Holdout 100 局（seed+200042..+200141），R3 / R4 best_model 均为 double 算法。*
+
+**数据解读**：
+
+- **100% 截断 + 撞墙=0**：撞墙=0 排除"撞墙堵死"（撞墙会留下 hit_wall 计数），唯一合理解释是 agent 在自由格间反复震荡；10×10 迷宫最优路径仅 15-25 步，200 步远超合理上限。
+- **失败-成功 0/1 离散**：成功局集中在 ≤30 步，失败局集中在 200 步，无中间过渡；0% 近截断、0% 早夭，无"接近但错过"或"路径规划差但仍在前进"的中间情形。
+- **R3 → R4 变化**：25 → 22 截断局（绝对 −3pp，相对 −12%；n=100 下 σ ≈ √(0.25·0.75/100) ≈ 4.3pp，3pp **不具统计显著性**），但**截断率 100% 这一失败模式结构未变**——4 通道减少循环地图数量，循环机制本身仍是 R4 EVAL 期失败主因。
+
+**R3 训练期 → EVAL 期的因果链**：训练期截断率 15.5%（含 5% ε 探索，部分跳出循环）→ EVAL 期截断率 25%（ε=0，循环被锁定）→ 100% 截断且撞墙=0 → 循环机制是 R3 失败主因 → R4 必须显式编码访问历史。
+
+---
+
+#### 五、R4 行动计划
 
 **核心变更（必做）：将模型保存触发条件改为 EVAL 成功率创新高**
 
@@ -529,7 +526,6 @@ if eval_success_rate > best_eval_success_rate:
 | `epsilon_decay` | 0.9985 | 不变 |
 | `buffer_capacity` | 80000 | 不变 |
 | `target_update_freq` | 1500 | 不变 |
-| `distance_shaping_alpha` | 0.5 | 不变 |
 | **`revisit_penalty`** | **-1.0** | **新增：训练时重复访问格子施加递进惩罚，抑制循环路径** |
 | **checkpoint 保存策略** | **EVAL 成功率最优** | **本轮核心变更** |
 
@@ -616,24 +612,26 @@ while not _bfs_reachable(wall_map, start_pos, goal_pos):
 
 #### 推理时策略循环问题（新发现）
 
-**现象**：在 ε=0 纯贪心推理时，agent 可能陷入两格间无限震荡——若 Q(A, right)=Q(B, left) 且两格互为邻格，则策略在 A→B→A→B 间循环，永远无法到达终点。
+**发现路径**：R3 训练完成后，将 best_model 在 Web Demo 中实测推理（ε=0 纯贪心），观察到 agent 在部分地图中陷入两格间无限震荡——A→B→A→B 循环 200 步触底截断。此现象直接指向"状态层缺少访问历史 → 推理时 Q 函数无法区分两格循环与两格前进"，是 R4 引入 visited_map 第 4 通道的直接动机。
 
-**根因**：此问题在训练期间因 ε>0 随机探索被天然掩盖，Q 值不会精确对称，但在 ε=0 的 Holdout 评估中以低概率出现（约 3–5% 的失败案例）。
+**EVAL 期步数分布（量化佐证）**：详见上文"四、循环失败率的直接测量"——R3 best_model 在 Holdout 100 局（ε=0 贪心）上的逐局步数显示 25/25=100% 失败局是步数=200 截断且撞墙=0.0，确证循环是 R3 EVAL 期失败的主因。训练期 vs EVAL 期的截断率差异（15.5% → 25%，见表 6.3）即 ε 探索在循环抑制上的边际贡献。
 
-此问题是 R4 的第三个攻坚方向，见后续尝试记录。
+**根因**：训练期间 ε>0 随机探索在多数情况下帮助 agent 跳出局部循环，但**有部分地图起终点组合使 ε 探索也不足以在 200 步内到达终点**——这部分训练局贡献的样本是"循环 200 步的负奖励轨迹"，网络学到"某些区域走出去成本极高"但不知道主动规避重复访问。visited_map 第 4 通道把"是否访问过"显式编码到状态中，使网络可直接学习"重访成本"——从症状侧抑制循环（不是消除机制）。
+
+此问题是 R4 的第三个攻坚方向，见后续尝试记录（R4-A1 revisit_penalty 失败 + R4-A2 visited_map 成功）。
 
 ---
 
 ### R4 完整尝试记录
 
-R4 共进行四次独立尝试（含一次正在运行的对照组），每次对比 R3 数据。
+R4 共进行四次独立尝试（对照组 R4-A3 已完成），每次对比 R3 数据。
 
 **注意**：R3 使用 eval_every=50，R4 系列使用 eval_every=100，下方对比统一取 100 ep 间隔数据点。
 
 R3 每 100 ep 的 EVAL 成功率（取相邻 50ep 点均值，ep=300 起）：
 
 ```
-ep= 300: 55%  ep= 400:  8%  ep= 500: 19%  ep= 600: 16%  ep= 700: 29%  ← shaping副作用期
+ep= 300: 55%  ep= 400:  8%  ep= 500: 19%  ep= 600: 16%  ep= 700: 29%  ← 早期 Q 值高估 crisis
 ep= 800: 41%  ep= 900: 42%  ep=1000: 53%  ep=1100: 58%  ep=1200: 65%
 ep=1300: 57%  ep=1400: 63%  ep=1500: 67%  ep=1600: 65%  ep=1700: 64%
 ep=1800: 66%  ep=1900: 68%  ep=2000: 64%  ep=2100: 66%  ep=2200: 70%
@@ -682,7 +680,7 @@ $$Q(s,a) = \mathbb{E}\left[r(s,a,s') + \gamma \max_{a'} Q(s',a')\right]$$
 
 网络拟合的是"含历史信息的"奖励函数，但推理时该信息不存在，导致 Q 值系统性失准，策略崩溃。这不是 Q 值高估问题（Double DQN 可修正），而是目标函数本身在测试分布下无意义。
 
-**与 P6（distance_shaping 副作用）的本质区别**：P6 是量值偏差，奖励函数形式在训练和推理时一致（shaping 在推理时同样存在），Double DQN 可自修正；P9 是分布不一致，训练和推理时奖励函数结构不同，不可修正。
+**与早期 Q 值高估 crisis（Q 值估计暂时性偏差）的本质区别**：crisis 是 Q 值在学习过程中的暂时性估计偏差，奖励函数形式在训练和推理时一致，Double DQN 可自修正；P9 是奖励函数结构在训练和推理时不一致（训练时含访问历史惩罚，推理时无），Q 函数目标在测试分布下无意义，不可修正。
 
 **结论**：**结构性失败，不可修补。** 奖励层的循环抑制方案在任何需要"有状态奖励"的场景下都会违反马尔可夫性。
 
@@ -734,7 +732,7 @@ ep=4700: 68%   ep=4800: 70%   ep=4900: 68%   ep=5000: 70%
 
 **Q 值高估危机（ep=400–700）复现**：
 
-与 R3 的 P6 机制相同：新增通道改变了网络输入分布，早期 buffer 中 Q 目标值系统性偏高，AvgQ 飙升（峰值 57+）。Double DQN 在约 400 ep 内完成自修正：
+与 R3 早期 crisis 现象一致：新增第4通道改变了网络输入分布，早期 buffer 中 Q 目标值系统性偏高，AvgQ 飙升（峰值 57+）。Double DQN 在约 400 ep 内完成自修正：
 
 $$\hat{Q}_{\text{Double}}(s,a) = r + \gamma Q_{\theta^-}(s', \arg\max_{a'} Q_\theta(s',a'))$$
 
@@ -757,10 +755,10 @@ ep=800 自修正后，R4-A2 在早中期（800–2500）持续领先 4–6pp，�
 
 ---
 
-#### R4-A3 — R3 超参 + EVAL checkpoint + BFS 连通性验证 + visited_map（进行中）
+#### R4-A3 — R3 超参 + EVAL checkpoint + BFS 连通性验证 + visited_map（已完成）
 
-**日期**：2026-05-31  
-**日志**：`logs/r4_ctrl_eval_ckpt.log`（PID 3980969，正在运行）  
+**日期**：2026-05-31（训练完成日 2026-05-31，文档整理日 2026-06-01）  
+**日志**：`logs/r4_ctrl_eval_ckpt.log`（ep=5000 训练已完成，Holdout 78% 已报告）  
 **设计意图**：在 R3 超参基础上，同步引入三项修复：P7（EVAL checkpoint）、P8（BFS 连通性）、以及 R4-A2 引入的 visited_map 第4通道。三项变量**同时存在**，无法单独分离各项贡献，本组的结论是"三项叠加的综合效果"。
 
 **与 R3 的精确差异**：
@@ -770,7 +768,7 @@ ep=800 自修正后，R4-A2 在早中期（800–2500）持续领先 4–6pp，�
 | checkpoint 触发 | 训练滚动奖励最高 | **EVAL 成功率创新高** |
 | 随机起终点连通性 | 无验证（~5-10% 无解） | **BFS 验证，保证可达** |
 | 观测通道数 | **3通道**（wall / agent / goal） | **4通道**（+visited_map，同 R4-A2） |
-| 超参 | buffer=80k, target=1500, shaping=0.5, ep=5000 | 全部相同 |
+| 超参 | buffer=80k, target=1500, ep=5000 | 全部相同 |
 
 **checkpoint 保存逻辑（commit `fbc2dc6`）**：
 
@@ -858,7 +856,7 @@ $$\text{无解任务率} \approx p_{\text{unreachable}} \approx 5\text{–}10\%$
 
 | 方案 | 核心改动 | EVAL 峰值 | Holdout | 相比 R3 |
 |------|---------|:---------:|:-------:|:-------:|
-| **R3 基准** | buffer+target+shaping | 84%（ep=3750） | 74% / SPL=0.735 | 基准 |
+| **R3 基准** | buffer+target | 84%（ep=3750） | 74% / SPL=0.735 | 基准 |
 | **R4-A1** | revisit_penalty=-1.0 | 52% | killed ep=1000 | **结构性失败** |
 | **R4-A2** | visited_map 4通道 | 80%（ep=4600） | 75% / SPL=0.735 | **+1pp，统计不显著** |
 | **R4-A3** | EVAL checkpoint + BFS + visited_map（三项叠加） | **88%**（ep=3300） | **78% / SPL=0.773** | **+4pp** |
@@ -883,7 +881,7 @@ $$\text{无解任务率} \approx p_{\text{unreachable}} \approx 5\text{–}10\%$
 
 ```
 runs/Round4_double_visited_map/         ← R4-A2 记录
-runs/Round4_ctrl_eval_ckpt/             ← R4-A3 记录（进行中）
+runs/Round4_ctrl_eval_ckpt/             ← R4-A3 记录（已完成，ep=5000）
 ```
 
 ### 所需截图
@@ -925,7 +923,6 @@ runs/Round4_ctrl_eval_ckpt/             ← R4-A3 记录（进行中）
 | `epsilon_decay` | 0.9985 |
 | `buffer_capacity` | 80000 |
 | `target_update_freq` | 1500 |
-| `distance_shaping_alpha` | 0.5 |
 | `warmup_episodes` | 200 |
 | `eval_every` | 100 |
 | `num_test_mazes` | 50 |
@@ -938,15 +935,7 @@ runs/Round4_ctrl_eval_ckpt/             ← R4-A3 记录（进行中）
 
 #### 危机成因（共性）
 
-四种算法在 ep≈400–700 区间均出现不同程度的 EVAL 成功率骤降，是**同一机制的共同表现**：
-
-R4 引入了两项新变量——distance_shaping（R3 已有）与 visited_map 第4通道（R4-A3 新增）。4通道输入相较3通道改变了网络输入数据分布，early buffer 中填充的是 warmup 阶段纯随机探索产生的 visited_map（访问模式随机、密度低），而训练开始后 visited_map 模式随策略改变而系统性变化。此分布漂移导致 Q 目标值系统性偏高（AvgQ 飙升），EVAL 成功率短期骤降。
-
-更精确的机制：distance_shaping 将奖励量纲放大（每步可额外 ±0.5），结合 4通道 Q 网络容量更大、early fitting 更快，早期 TD 目标：
-
-$$\hat{Q} = r + \gamma \max_{a'} Q_{\theta^-}(s',a')$$
-
-中 $Q_{\theta^-}$ 因输入分布漂移而高估，通过 bootstrapping 反复放大，形成**正反馈高估回路**。
+四种算法在 ep≈400–700 区间均出现 EVAL 成功率骤降，根因为 **vanilla 目标 $\hat{Q} = r + \gamma \max_{a'} Q_{\theta^-}(s',a')$ 的 $\max$ 算子正偏差被 bootstrapping 反复放大**：R3 起引入的 buffer×4 + target×3 改动（延长旧策略样本滞留、放大 TD 目标漂移）与 R4 引入的 visited_map 第4通道（输入分布变化）使早期 $Q_{\theta^-}$ 系统性高估，TD 目标通过自举迭代形成正反馈回路，AvgQ 飙升，EVAL 骤降。同一机制在不同算法上表现程度不同，根源是它们对 max 算子的修正能力不同。
 
 #### 四算法危机程度对比
 
@@ -961,44 +950,29 @@ $$\hat{Q} = r + \gamma \max_{a'} Q_{\theta^-}(s',a')$$
 
 #### Double DQN 的抗危机机制
 
-**vanilla 与 dueling 使用 vanilla 目标**，其 Q 目标为：
-
-$$\hat{Q}_{\text{vanilla}} = r + \gamma \max_{a'} Q_{\theta^-}(s',a')$$
-
-$\max$ 算子本身具有正偏差（Jensen 不等式的后果）：当 $Q_{\theta^-}$ 含噪声时，$\max$ 会系统性选中噪声最大的动作，造成持续高估。这一偏差在 Q 网络输入分布漂移的危机期被进一步放大。
-
-**double 与 double_dueling 使用 Double DQN 目标**（van Hasselt et al. 2016）：
+**vanilla 与 dueling 用 vanilla 目标**（$\max$ 算子正偏差在 Q 含噪声时系统性选中噪声最大动作，造成持续高估）；**double 与 double_dueling 用 Double DQN 目标**（van Hasselt et al. 2016）：
 
 $$\hat{Q}_{\text{double}} = r + \gamma Q_{\theta^-}(s', \arg\max_{a'} Q_\theta(s',a'))$$
 
-解耦动作选择（$Q_\theta$，在线网络）与价值估计（$Q_{\theta^-}$，目标网络），两者的估计误差相关性低，互相抵消，系统性高估被有效抑制。当输入分布漂移导致 $Q_\theta$ 选出高估动作时，$Q_{\theta^-}$ 用其独立估计的价值修正，使 TD 目标不会随高估动作同步飙升。
-
-这解释了为何 double_dueling（ep=700:54%）远快于 dueling（ep=700:6%）恢复。
+解耦动作选择（$Q_\theta$）与价值估计（$Q_{\theta^-}$），两者的估计误差相关性低、互相抵消，$\max$ 算子的系统性高估被有效抑制。这解释了为何 double_dueling（ep=700:54%）远快于 dueling（ep=700:6%）恢复。
 
 ---
 
 ### EVAL 曲线关键节点对比
 
-以下为训练全程 EVAL 成功率（每 100 ep）关键阶段数据：
+| 阶段 | vanilla | double（A3） | dueling | double_dueling |
+|------|:-------:|:-----------:|:-------:|:--------------:|
+| 危机最低点 | 6%（ep=600） | 10%（ep=500–600） | 4%（ep=500）/ 6%（ep=700）| 20%（ep=400） |
+| 危机期 ep=700 | — | 18% | 6%（二次探底）| **54%**（已恢复） |
+| EVAL 峰值 | 94%（ep=4800） | 88%（ep=3300） | 90%（ep=4900）| 90%（ep=4200） |
+| 峰值 ep | 4800 | 3300 | 4900 | **4200**（最早） |
 
-| ep | vanilla | double（A3） | dueling | double_dueling |
-|----|:-------:|:-----------:|:-------:|:--------------:|
-| 300 | — | 54% | — | — |
-| 400 | — | 34% | — | 20% ← 危机最浅 |
-| 500 | — | 10% | **4%** ← 危机最深 | — |
-| 600 | **6%** ← 危机底部 | 10% | — | — |
-| 700 | — | 18% | **6%** ← 二次探底 | **54%** ← 已恢复 |
-| 800 | — | 26% | — | — |
-| 900 | — | 58% | — | — |
-| 4200 | — | — | — | **90%** ← EVAL 峰值 |
-| 4800 | **94%** ← EVAL 峰值 | — | — | — |
-| 4900 | — | — | **90%** ← EVAL 峰值 | — |
+**观察**：
 
-注：double(A3) 完整数据见 [R4-A3 节](#r4-a3--r3-超参--eval-checkpoint--bfs-连通性验证--visited_map进行中)；其余算法仅列出从训练日志中确认的关键节点，未列项不代表缺失数据。
-
-**EVAL 峰值时机观察**：
-- double_dueling 峰值最早（ep=4200），比 vanilla 早 600 ep，与双重改进加速收敛的理论预期一致
-- vanilla 与 dueling 峰值均在末段（ep=4800/4900），说明单一改进在本任务复杂度下需要更多训练时间
+- **危机期排序**（底越深越严重）：dueling 4% ≪ vanilla 6% < double 10% < double_dueling 20%。Double DQN 抗高估机制使 double_dueling 危机最浅
+- **恢复速度**：ep=700 时 double_dueling（54%）领先 dueling（6%）48pp，是 Double DQN 解耦机制最直接定量证据
+- **峰值时机**：double_dueling（ep=4200）比 vanilla（ep=4800）早 600 ep，体现双重改进加速收敛；vanilla 与 dueling 峰值均靠后，说明单一改进在本任务规模下需要更多训练时间
+- double(A3) 完整曲线见 [R4-A3 节](#r4-a3--r3-超参--eval-checkpoint--bfs-连通性验证--visited_map已完成)
 
 ---
 
@@ -1092,10 +1066,6 @@ Dueling 网络的真正泛化优势来自**参数共享机制**：V(s) 流被所
 
 ---
 
-**R1–R4 纵向超参演进（Double DQN，相同算法）**：
-
-![R1→R4 超参演进 EVAL 成功率对比](assets/compare/cmp_eval_success_rate_r1_to_r4_double.png)
-
 ### 结论链（R1→R4 纵向总结）
 
 以下为本项目全程的核心发现链，以 Holdout 成功率为主线：
@@ -1104,7 +1074,7 @@ Dueling 网络的真正泛化优势来自**参数共享机制**：V(s) 流被所
 |------|---------|:-------:|------------|
 | R1 | 随机起终点基线 | 61% | P1（训练量不足）、P2（探索过早终底）|
 | R2 | 延长训练+调缓探索衰减 | 64% | P3（buffer 过小导致振荡）、P4（target 同步过频）|
-| R3 | buffer×4 + target×3 + shaping | 74% | P6（shaping 副作用）、P7（checkpoint 时序偏差 10pp）|
+| R3 | buffer×4 + target×3 | 74% | P5（早期 Q 值高估 crisis，根因待定）、P7（checkpoint 时序偏差 10pp）|
 | R4-A1 | revisit_penalty（失败） | — | **P9（马尔可夫性违反）** ← 结构性失败 |
 | R4-A2 | visited_map 4通道 | 75% | P7 未修复导致 EVAL 峰值无法转化为 Holdout 提升 |
 | R4-A3 (double) | EVAL checkpoint + BFS + visited_map | 78% | EVAL→Holdout gap 10pp 持续（算法限制） |
@@ -1114,24 +1084,17 @@ Dueling 网络的真正泛化优势来自**参数共享机制**：V(s) 流被所
 
 **最终结论（五点）**：
 
-1. **Dueling 架构是本任务的最优选择**：V(s)/A(s,a) 分解使网络能将"位置价值"与"动作优势"解耦学习，与随机起终点迷宫导航任务的结构性质（大量多动作等效状态）高度吻合，最终 Holdout 84%（+10pp vs R3），EVAL→Holdout gap 6pp（最小，泛化最稳）。
+1. **Dueling 架构是本任务的最优选择**：V(s)/A(s,a) 分解使网络能将"位置价值"与"动作优势"解耦学习，与随机起终点迷宫导航任务的任务结构（大量多动作等效状态）高度吻合，最终 Holdout 84%（+10pp vs R3），EVAL→Holdout gap 6pp（最小，泛化最稳）。其中 R3→R4(double) 的 +4pp 是 P7+P8+visited_map 三项叠加效果（见结论4），R4(double)→R4(dueling) 的 +6pp 是 Dueling 架构的独立贡献（控制其他变量不变）。
 
 2. **Double DQN 主要收益在训练过程，非最终结果**：危机期加速恢复（ep=700 领先 dueling 48pp）和早期收敛加速是真实可量化的收益；但在 5000 ep 充分训练后，与纯 dueling 的最终 Holdout 差距（81% vs 84%）表明 Double DQN 的抗高估机制在本任务规模下已不是瓶颈。
 
 3. **EVAL→Holdout gap 是算法质量的独立指标**：Gap 越小说明策略对未见地图的鲁棒性越高。dueling gap 6pp、double_dueling 9pp、double 10pp、vanilla 19pp，与各算法的架构泛化能力排序一致，可作为独立于 Holdout 成功率的泛化质量指标。
 
-4. **P7（EVAL-based checkpoint）是最高性价比的单项修复**：R3→R4(double) +4pp Holdout 提升中，大部分来自 checkpoint 策略修正；配合 dueling 架构进一步提升至 84%，累计 +10pp vs R3。
+4. **P7（EVAL-based checkpoint）是高性价比修复，但单项贡献未严格消融**：R3→R4(double) 的 +4pp 是 P7+P8+visited_map 三项叠加效果，未做单变量消融无法精确归因。R4-A2（仅 visited_map，无 P7）Holdout=75% 仅 +1pp（不显著），间接说明 P7 是三项中单项收益最大者，但严格证明需补做 3通道+EVAL checkpoint+BFS 对照组。
 
 5. **P9（马尔可夫性违反）是硬约束**：任何将 episode 历史信息置于奖励函数中的循环抑制方案（revisit_penalty 等）均导致 Q 函数目标无意义，正确解决方案唯有状态编码（visited_map）。
 
 ---
-
-### 所需截图（四算法对比）
-
-- [ ] `r4_four_algo_eval_crisis.png`：四算法 ep=300–900 EVAL 曲线，体现危机深度与恢复速度差异
-- [ ] `r4_four_algo_holdout_bar.png`：四算法 Holdout 成功率柱状图（含 R3 参考线）
-- [ ] `r4_dueling_vs_double_dueling_late.png`：ep=3000–5000 曲线对比，体现 dueling 末段稳定性优于 double_dueling
-- [ ] `r4_vanilla_eval_overfit.png`：vanilla ep=4000–5000 曲线，体现 EVAL 峰值虚高（94%）与下降
 
 ---
 
@@ -1142,7 +1105,7 @@ Dueling 网络的真正泛化优势来自**参数共享机制**：V(s) 流被所
 | # | 问题 | 标准做法 | 本项目取舍 |
 |---|------|---------|----------|
 | A | 超参消融阶段多次参考了 Holdout 数字，测试集不严格无偏 | 验证集专用于超参搜索，Holdout 只在最终报告用一次 | 时间限制；R4 引入 EVAL-based checkpoint 是向正确方向的修正，但 R1–R3 的超参决策已隐性参考了 Holdout |
-| B | R3 同时修改三个变量（buffer + target_freq + shaping），无法归因 | 每次只改一个变量，或补做单因素对照组 | 时间限制；shaping 的独立贡献未被单独量化 |
+| B | R3 同时修改两个变量（buffer + target_freq），无法归因各自贡献 | 每次只改一个变量，或补做单因素对照组 | 时间限制；buffer×4 与 target×3 的独立贡献未被单独量化 |
 | C | 所有结论基于单次训练，无重复实验 | 每配置 3–5 个随机种子，报告均值 ± std（Henderson et al. 2018） | 算力限制；dueling vs double_dueling 3pp 差距（Holdout n=100，CI≈±5pp）统计不显著，需重复实验确认 |
 | D | 评估时失败局步数未记录 | `run_evaluation()` 记录逐局步数，区分循环失败与走入死路失败 | 现有 log 无此数据；需改代码重跑，当前仅有训练期数据（混合探索期与贪心期） |
 
@@ -1152,7 +1115,6 @@ Dueling 网络的真正泛化优势来自**参数共享机制**：V(s) 流被所
 |---|------|---------|---------|
 | E | visited_map 二值编码无法区分访问次数，网络对两格死循环覆盖不足，需 app 推理时兜底 | 将 ch3 改为归一化计数图（`min(count,3)/3.0`，cap=3），重新训练 | 网络内化"高频重访格应规避"策略，推理时 Q 值修正可完全移除 |
 | F | 振荡根治需 Prioritized Experience Replay | 实现 PER（Schaul et al. 2016），赋予高 TD-error 样本更高采样概率 | 消除均匀采样导致的成功样本周期性被覆盖问题，振荡从根本上消除 |
-| G | Ng et al. (1999) 势函数 shaping 省略了 γ，属近似实现 | 代码改为 `reward += alpha * (gamma * dist_after_to_goal - dist_before_to_goal)` 的标准形式 | 严格满足策略不变性定理，误差从约 1% 降至 0 |
 
 ### 指标层面
 

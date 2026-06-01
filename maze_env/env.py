@@ -370,6 +370,8 @@ class MazeEnv(gym.Env):
             self._agent_pos = (new_row, new_col)
             reward = self.reward_step
             # 距离 shaping：靠近目标为正，远离为负（仅有效移动步计入）
+            # 注：本项目 config 固定 distance_shaping_alpha=0.0，train.py 也未透传该字段，
+            #     故此 if 分支在当前训练/评估流程中永不执行，保留作为参数设计的可扩展点。
             if self.distance_shaping_alpha != 0.0:
                 dist_after: int = abs(new_row - gr) + abs(new_col - gc)
                 reward += self.distance_shaping_alpha * (dist_before - dist_after)

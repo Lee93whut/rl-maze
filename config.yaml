@@ -15,8 +15,12 @@ rewards:
   goal:       100
   wall_hit:   -10
   step:        -1
-  distance_shaping_alpha: 0.5   # 距离 shaping 系数；0 = 关闭
-                                # 每步额外奖励 = alpha × (上一步曼哈顿距离 - 当前曼哈顿距离)
+  distance_shaping_alpha: 0.0   # 距离 shaping 系数；0 = 关闭
+                                # env.py 内部支持该参数（每步额外奖励 = alpha × Δ曼哈顿距离），
+                                # 但当前 train.py 重构后未透传此字段，实际为 0.0。
+                                # 若需启用，需在 src/train.py 手工构造 MazeEnv(...) 处追加
+                                # `distance_shaping_alpha=distance_shaping_alpha` 并在配置读取处
+                                # 解析 reward_cfg.get("distance_shaping_alpha", 0.0)。
   revisit_penalty: 0.0          # 已移至状态层：visited_map 第4通道编码访问历史（Markov-correct）
                                 # 奖励层 revisit_penalty 违反马尔可夫性，已弃用
 
