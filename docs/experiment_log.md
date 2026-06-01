@@ -504,8 +504,6 @@ if eval_success_rate > best_eval_success_rate:
 
 **预期**：R3 中 double 算法 EVAL 峰值达 84%，改保存策略后 Holdout 预期接近 80–84%（消除 10pp 保存时机损失，剩余 2–4pp 为评估集过拟合的正常偏差）。
 
-**关于"R4 续 / 算法横评阶段"**：R4 完成上述三项叠加后，确认 78% 是该算法（double）的上限；为判断"R4 还能不能继续往前推 6pp" 才有了"R4 续"——固定 R4 已验证有效的超参组合（buffer=80k、target=1500、shaping=0.5、visited_map 4通道、EVAL checkpoint、BFS），4 种算法各跑一次。这是"消融决定上限 → 用剩余 6pp 空间横评算法"的两步走，**不是 R3 结束后 R4 一开始就规划的内容**。
-
 ---
 
 ## Round 4 — 系统性问题修复：Checkpoint 策略 + 训练信号质量
