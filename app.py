@@ -72,8 +72,26 @@ ALGO_LABELS: dict[str, str] = {
     "vanilla":        "Vanilla DQN（基准）",
     "double":         "Double DQN（抑制高估）",
     "dueling":        "Dueling DQN（V+A 分解）",
-    "double_dueling": "Double + Dueling（推荐）",
+    "double_dueling": "Double + Dueling（V+A + 抑制高估）",
 }
+
+
+# Holdout 测试集成功率（独立评估，非训练期 eval_success）
+ALGO_SUCCESS_RATES: dict[str, Optional[float]] = {
+    "vanilla":        75.0,
+    "double":         78.0,
+    "dueling":        84.0,
+    "double_dueling": 81.0,
+}
+
+
+def algo_display_label(algo: str) -> str:
+    """返回算法下拉框显示文字：算法名 + 简述 + holdout 成功率（若可用）。"""
+    base = ALGO_LABELS[algo]
+    rate = ALGO_SUCCESS_RATES.get(algo)
+    if rate is not None:
+        return f"{base}  |  holdout {rate:.0f}%"
+    return base
 # 默认算法：优先读 config.yaml，fallback 到 double_dueling
 _default_algo = str(_cfg.get("dqn", {}).get("algorithm", "double_dueling")).strip().lower()
 DEFAULT_ALGO: str = _default_algo if _default_algo in ALGO_OPTIONS else "double_dueling"
@@ -610,7 +628,7 @@ def main() -> None:
         selected_algo = st.selectbox(
             "DQN 算法变体",
             options=ALGO_OPTIONS,
-            format_func=lambda a: ALGO_LABELS[a],
+            format_func=algo_display_label,
             index=ALGO_OPTIONS.index(st.session_state.selected_algo),
             key="algo_select",
             help="切换算法后点击「DQN 寻路」按钮可对比不同算法在同一地图上的路径",

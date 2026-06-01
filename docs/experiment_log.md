@@ -14,9 +14,10 @@
 | Round 1 | **随机起终点** | 初版超参 | 61.0% | 0.605 | — | `ep=2000` 曲线未收敛；`decay=0.995` 探索提前触底 |
 | Round 2 | 随机起终点 | `ep=6000` + `decay=0.9985` | 64.0% | 0.633 | 74% | P1/P2 修复，新发现 buffer 过小（P3）和 target 同步过频（P4）|
 | Round 3 | 随机起终点 | `buffer=80k` + `target=1500` + `shaping=0.5` | **74.0%** | **0.735** | **84%** | 峰值突破 80%；Holdout 低于峰值 10pp，根因为保存策略 |
-| Round 4 | 随机起终点 | EVAL-based checkpoint + BFS 连通性验证；探索 revisit_penalty（失败）和 visited_map 4通道 | **78.0%**（A3实测） | **0.773** | **88%** | P7(checkpoint时序)+P8(无解任务)系统性修复；P9(马尔可夫违反)新发现；A3为三项变量叠加，非单因素对照 |
+| Round 4 | 随机起终点 | EVAL-based checkpoint + BFS 连通性验证；探索 revisit_penalty（失败）和 visited_map 4通道 | **78.0%**（A3，double 算法） | **0.773** | **88%** | P7(checkpoint时序)+P8(无解任务)系统性修复；P9(马尔可夫违反)新发现；A3为三项变量叠加，非单因素对照 |
+| Round 4（续）| 随机起终点 | R4-A3 超参固定，四算法横向消融（唯一变量=算法）| **84.0%**（dueling，最优） | **0.817** | **94%**（vanilla） | dueling EVAL→Holdout gap=6pp 最优泛化；double_dueling 81%；vanilla 75%（19pp gap 虚高）；Double DQN 危机恢复快但终态不及纯 dueling |
 
-**关键结论链**：随机起终点使状态空间扩大约 40×，需要更长训练（R2）→ 更大 buffer 保留稀疏成功样本（R3）→ 修复 checkpoint 时序偏差 + 连通性验证 + visited_map 状态编码（R4）。奖励层循环抑制违反马尔可夫性（P9）；状态层编码（visited_map）理论正确；系统性修复（P7+P8+visited_map 叠加）最终将 Holdout 从 74% 提升至 78%。
+**关键结论链**：随机起终点使状态空间扩大约 40×，需要更长训练（R2）→ 更大 buffer 保留稀疏成功样本（R3）→ 修复 checkpoint 时序偏差 + 连通性验证 + visited_map 状态编码（R4）→ Dueling 架构的 V/A 分解与多动作等效迷宫导航任务高度适配（R4 算法消融）。奖励层循环抑制违反马尔可夫性（P9）；状态层编码（visited_map）理论正确；最优配置（dueling + EVAL checkpoint + BFS + visited_map）最终将 Holdout 从 74%（R3）提升至 **84%**（+10pp）。
 
 ---
 
@@ -887,3 +888,231 @@ runs/Round4_ctrl_eval_ckpt/             ← R4-A3 记录（进行中）
 - [ ] `r4_a1_eval_collapse.png`：R4-A1 的 EVAL 崩溃曲线（ep=600 骤降至 6%）
 - [ ] `r4_a3_eval_progress.png`：R4-A3 训练完成后的 EVAL 曲线（体现 EVAL SAVE 触发点）
 - [ ] `r4_ctrl_vs_r3_holdout.png`：R4-A3 Holdout 结果 vs R3 基准（训练完成后补充）
+
+---
+
+## Round 4（续）— 算法横向消融：Vanilla / Double / Dueling / Double-Dueling
+
+**日期**：2026-06-01  
+**目的**：在 R4-A3 超参基础上，以四种 DQN 算法变体为唯一自变量，定量评估 Dueling Network 架构与 Double DQN 目标的独立及联合贡献。  
+**实验方式**：串行训练（bash `&&` 链），保证资源隔离、随机种子隔离（seed=42 固定），结果可直接对比。
+
+---
+
+### 实验设计：控制变量说明
+
+本组实验严格遵循单变量消融原则（Henderson et al. 2018）。四个算法的所有训练条件完全一致，**唯一变量为网络架构与 Q 目标计算方式**：
+
+| 算法 | 网络结构 | Q 目标计算 | 理论来源 |
+|------|---------|-----------|---------|
+| vanilla | DQNNetwork（3卷积+2FC） | $\hat{Q} = r + \gamma \max_{a'} Q_{\theta^-}(s',a')$ | Mnih et al. (2015) |
+| double | DQNNetwork（同上） | $\hat{Q} = r + \gamma Q_{\theta^-}(s', \arg\max_{a'} Q_\theta(s',a'))$ | van Hasselt et al. (2016) |
+| dueling | DuelingDQNNetwork（V+A双流） | 同 vanilla 目标 | Wang et al. (2016) |
+| double_dueling | DuelingDQNNetwork（同上） | 同 double 目标 | 两项正交叠加 |
+
+**关键事实**：所有四种算法均使用**相同的 4 通道观测**（ch0=wall, ch1=agent, ch2=goal, ch3=visited_map）。入口均为 `input_channels=4`，`DQNNetwork` 与 `DuelingDQNNetwork` 的卷积特征提取部分结构完全相同，差异仅在分支头（Dueling 额外拆分 V/A 流）。
+
+**固定超参**（源自 R4-A3，来自 `config.yaml`）：
+
+| 超参 | 值 |
+|------|----|
+| `num_episodes` | 5000 |
+| `epsilon_decay` | 0.9985 |
+| `buffer_capacity` | 80000 |
+| `target_update_freq` | 1500 |
+| `distance_shaping_alpha` | 0.5 |
+| `warmup_episodes` | 200 |
+| `eval_every` | 100 |
+| `num_test_mazes` | 50 |
+| checkpoint 策略 | EVAL 成功率创新高时保存（P7 修复） |
+| 连通性验证 | BFS 保证起终点可达（P8 修复） |
+
+---
+
+### Q 值高估危机：共性现象与算法间差异
+
+#### 危机成因（共性）
+
+四种算法在 ep≈400–700 区间均出现不同程度的 EVAL 成功率骤降，是**同一机制的共同表现**：
+
+R4 引入了两项新变量——distance_shaping（R3 已有）与 visited_map 第4通道（R4-A3 新增）。4通道输入相较3通道改变了网络输入数据分布，early buffer 中填充的是 warmup 阶段纯随机探索产生的 visited_map（访问模式随机、密度低），而训练开始后 visited_map 模式随策略改变而系统性变化。此分布漂移导致 Q 目标值系统性偏高（AvgQ 飙升），EVAL 成功率短期骤降。
+
+更精确的机制：distance_shaping 将奖励量纲放大（每步可额外 ±0.5），结合 4通道 Q 网络容量更大、early fitting 更快，早期 TD 目标：
+
+$$\hat{Q} = r + \gamma \max_{a'} Q_{\theta^-}(s',a')$$
+
+中 $Q_{\theta^-}$ 因输入分布漂移而高估，通过 bootstrapping 反复放大，形成**正反馈高估回路**。
+
+#### 四算法危机程度对比
+
+| 算法 | 危机底部 EVAL | 危机时间窗口 | 危机程度 |
+|------|:-----------:|:----------:|:-------:|
+| vanilla | **6%**（ep=600） | ep≈400–800 | 深 |
+| double（A3） | **10%**（ep=500–600） | ep≈400–800 | 中 |
+| dueling | **4%**（ep=500）; **6%**（ep=700） | ep≈400–800 | **最深、最长** |
+| double_dueling | **20%**（ep=400） | ep≈300–600 | **最浅、最快恢复** |
+
+注：ep=700 时，double_dueling 已恢复至 **54%**，而 dueling 仍仅 **6%**，差距 **48pp**，是 Double DQN 抗高估特性的最直接定量证据。
+
+#### Double DQN 的抗危机机制
+
+**vanilla 与 dueling 使用 vanilla 目标**，其 Q 目标为：
+
+$$\hat{Q}_{\text{vanilla}} = r + \gamma \max_{a'} Q_{\theta^-}(s',a')$$
+
+$\max$ 算子本身具有正偏差（Jensen 不等式的后果）：当 $Q_{\theta^-}$ 含噪声时，$\max$ 会系统性选中噪声最大的动作，造成持续高估。这一偏差在 Q 网络输入分布漂移的危机期被进一步放大。
+
+**double 与 double_dueling 使用 Double DQN 目标**（van Hasselt et al. 2016）：
+
+$$\hat{Q}_{\text{double}} = r + \gamma Q_{\theta^-}(s', \arg\max_{a'} Q_\theta(s',a'))$$
+
+解耦动作选择（$Q_\theta$，在线网络）与价值估计（$Q_{\theta^-}$，目标网络），两者的估计误差相关性低，互相抵消，系统性高估被有效抑制。当输入分布漂移导致 $Q_\theta$ 选出高估动作时，$Q_{\theta^-}$ 用其独立估计的价值修正，使 TD 目标不会随高估动作同步飙升。
+
+这解释了为何 double_dueling（ep=700:54%）远快于 dueling（ep=700:6%）恢复。
+
+---
+
+### EVAL 曲线关键节点对比
+
+以下为训练全程 EVAL 成功率（每 100 ep）关键阶段数据：
+
+| ep | vanilla | double（A3） | dueling | double_dueling |
+|----|:-------:|:-----------:|:-------:|:--------------:|
+| 300 | — | 54% | — | — |
+| 400 | — | 34% | — | 20% ← 危机最浅 |
+| 500 | — | 10% | **4%** ← 危机最深 | — |
+| 600 | **6%** ← 危机底部 | 10% | — | — |
+| 700 | — | 18% | **6%** ← 二次探底 | **54%** ← 已恢复 |
+| 800 | — | 26% | — | — |
+| 900 | — | 58% | — | — |
+| 4200 | — | — | — | **90%** ← EVAL 峰值 |
+| 4800 | **94%** ← EVAL 峰值 | — | — | — |
+| 4900 | — | — | **90%** ← EVAL 峰值 | — |
+
+注：double(A3) 完整数据见 [R4-A3 节](#r4-a3--r3-超参--eval-checkpoint--bfs-连通性验证--visited_map进行中)；其余算法仅列出从训练日志中确认的关键节点，未列项不代表缺失数据。
+
+**EVAL 峰值时机观察**：
+- double_dueling 峰值最早（ep=4200），比 vanilla 早 600 ep，与双重改进加速收敛的理论预期一致
+- vanilla 与 dueling 峰值均在末段（ep=4800/4900），说明单一改进在本任务复杂度下需要更多训练时间
+
+---
+
+### Holdout 最终结果
+
+| 排名 | 算法 | Holdout 成功率 | Holdout SPL | EVAL 峰值 | EVAL→Holdout | 权重路径 |
+|:---:|------|:-------------:|:-----------:|:---------:|:------------:|---------|
+| 🥇 | **dueling** | **84.0%** | **0.817** | 90%（ep=4900） | −6pp | `results/best_model_train_dueling_20260601_003409.pth` |
+| 🥈 | **double_dueling** | **81.0%** | **0.793** | 90%（ep=4200） | −9pp | `results/best_model_train_double_dueling_20260601_023134.pth` |
+| 🥉 | **double（A3）** | **78.0%** | **0.773** | 88%（ep=3300） | −10pp | `results/best_model_train_double_20260531_*.pth`（R4-A3 运行） |
+| 4️⃣ | **vanilla** | **75.0%** | **0.726** | 94%（ep=4800） | −19pp | `results/best_model_train_vanilla_20260531_232230.pth` |
+| （参考） | R3 double | 74.0% | 0.735 | 84%（ep=3750） | −10pp | — |
+
+**R1–R4 纵向成功率**：61%（R1）→ 64%（R2）→ 74%（R3）→ 84%（R4 dueling）
+
+---
+
+### 理论分析
+
+#### Dueling Network 机制与本任务的适配性
+
+Wang et al. (2016) 指出，Dueling 架构将 Q 函数分解为状态价值函数 $V(s)$ 与优势函数 $A(s,a)$ 的和：
+
+$$Q(s,a) = V(s) + A(s,a) - \frac{1}{|\mathcal{A}|}\sum_{a'} A(s',a')$$
+
+其核心收益在于**共享状态价值估计**。当不同动作的价值差异很小时（例如在走廊段，"前进"与"原地打转"以外的三个方向均撞墙，所有可行动作效果相近），Dueling 网络仍能通过 V(s) 流精确评估当前状态的内在价值，而无需对每个动作单独精确估计 $Q(s,a)$。
+
+**本任务的适配性**：
+
+随机起终点 10×10 迷宫中，大量状态满足"多数动作等效"的条件：
+1. **死胡同状态**：3个方向均为墙，唯一可行动作明确，A(s,a) 的估计误差影响微小，主要价值来自 V(s) 对该位置是否接近终点的评估
+2. **走廊状态**：两侧为墙，V(s) 携带的路径价值信息（曼哈顿距离+障碍分布）比单动作的 A(s,a) 更稳定
+3. **已访问格重访**：ch3=visited_map 编码历史，当 V(s) 准确反映"当前格已多次访问、价值已被充分学习"的信息时，Dueling 比 vanilla 更高效地利用了状态价值信号
+
+这一分析与实测结果一致：**dueling 的 EVAL→Holdout gap 仅 6pp（最小）**，说明 Dueling 架构泛化性能最稳定，不仅"学得好"（EVAL 峰值）也"记得稳"（Holdout 不退化）。
+
+#### Double DQN 在危机期的修正机制
+
+如前所述，Double DQN 解耦动作选择与价值估计，有效抑制 $\max$ 算子的系统性高估。在本实验中，该机制的量化收益体现在：
+
+- **危机期**：ep=700 时 double_dueling（54%）领先 dueling（6%）达 48pp，Double DQN 将危机持续时间压缩约 200–300 ep
+- **峰值时机**：double_dueling EVAL 峰值（ep=4200）比 dueling（ep=4900）早 700 ep，说明 Double DQN 加速了整体收敛，减少了 Q 高估导致的"无效探索周期"
+
+然而，**Double DQN 的修正作用在充分训练后逐渐饱和**：两者最终 EVAL 峰值均为 90%，差距消失。这与 van Hasselt et al. (2016) 的分析一致——Double DQN 的收益主要在训练早中期（Q 值估计噪声大），随训练推进 Q 值收敛后两者趋同。
+
+#### Dueling + Double 组合的实测效果分析
+
+**理论预期**：两项改进正交（一改架构，一改目标计算），叠加应有协同收益。
+
+**实测结果**：double_dueling Holdout=81%，位居第二，但**低于纯 dueling（84%）3pp**。
+
+这一"叠加不如单独"的结果有以下解释：
+
+1. **训练时间对称性破坏**：double_dueling 在 ep=4200 已达 EVAL 峰值，而 dueling 在 ep=4900 仍在上升。double_dueling 较早"过峰"，说明 Double DQN 使收敛更快（对应危机恢复更快），但也可能导致 Q 值在峰值后更快出现低估偏差（over-correction），而 dueling 因 vanilla 目标反而保留了轻微的高估"缓冲"，维持了更长的高性能区间。
+
+2. **末段稳定性差异**：EVAL→Holdout gap 方面，double_dueling（-9pp）略大于 dueling（-6pp），说明 double_dueling 的 EVAL 峰值对应的策略鲁棒性稍差，在 Holdout 新地图上的泛化略逊于 dueling。
+
+3. **样本量说明**：Holdout n=100，置信区间约 ±5pp（二项分布 95% CI）。3pp 差距在统计边界，但方向一致。
+
+**结论**：对于本任务（随机起终点 10×10 迷宫，5000 ep 训练），Dueling 架构的状态价值分解与本任务特性高度适配，单独带来的泛化增益（+6pp vs double）大于 Double DQN 单独带来的增益（+3pp vs vanilla）；两者组合在终态 Holdout 上不优于纯 Dueling，原因是 Double DQN 的加速效应改变了训练动态，使峰值出现更早但稳定区间更短。
+
+---
+
+### EVAL→Holdout Gap 分析（泛化能力诊断）
+
+| 算法 | EVAL 峰值 | Holdout | Gap | Gap 成因 |
+|------|:---------:|:-------:|:---:|---------|
+| vanilla | 94% | 75% | **-19pp** | EVAL 峰值出现在训练末段（ep=4800），EVAL 集（50张）与 Holdout 集（100张）的地图分布差异，加上 ep=4800 后 EVAL 峰值区间狭窄，保存的权重在 Holdout 上泛化偏弱 |
+| double（A3） | 88% | 78% | -10pp | R4-A3 实验基准水平 |
+| double_dueling | 90% | 81% | -9pp | Double DQN 早峰效应，EVAL 峰值附近策略稳定区间较短 |
+| dueling | 90% | 84% | **-6pp（最小）** | Dueling 架构泛化稳定；V(s) 流学习的"状态价值地图"在未见过的 Holdout 地图上迁移能力最强 |
+
+**vanilla 的 19pp Gap 解读**：
+
+vanilla 是本组唯一一个 EVAL 峰值（94%）远高于其他算法但 Holdout 最低（75%）的算法，Gap 高达 19pp，是其他算法的 2–3 倍。有两个可能原因：
+
+1. **EVAL 集过拟合**：EVAL 每次随机生成 50 张地图，vanilla 网络容量虽低于 dueling，但若保存点对应的 50 张恰好是"容易的地图子集"，则 EVAL 成功率虚高。统计上，50 张样本的随机性导致约 ±7pp 的测量噪声，94% 的实测值上存在约 4–7pp 的正向偏差合理。
+2. **训练晚期策略退化**：vanilla 无 V/A 分解，Q(s,a) 需逐一精确估计，训练末段（ep=4500+）的 buffer 回放可能已不能支持如此精细的 Q 函数持续更新，导致 Holdout 性能在实际泛化时大幅缩水。
+
+**dueling 的 6pp Gap 解读**：
+
+Dueling 的 V(s) 流是全动作共享的，其泛化的关键是"状态价值地图"在新地图上是否有效。由于 V(s) 学习的是全局位置→价值的映射（不依赖特定障碍布局），在随机障碍的 Holdout 地图上，学到的"靠近终点的格子价值更高"的 V(s) 估计仍然成立，A(s,a) 仅提供局部动作微调。这一结构性优势使 dueling 的泛化最稳定，Gap 最小。
+
+---
+
+### 结论链（R1→R4 纵向总结）
+
+以下为本项目全程的核心发现链，以 Holdout 成功率为主线：
+
+| 轮次 | 核心突破 | Holdout | 关键问题诊断 |
+|------|---------|:-------:|------------|
+| R1 | 随机起终点基线 | 61% | P1（训练量不足）、P2（探索过早终底）|
+| R2 | 延长训练+调缓探索衰减 | 64% | P3（buffer 过小导致振荡）、P4（target 同步过频）|
+| R3 | buffer×4 + target×3 + shaping | 74% | P6（shaping 副作用）、P7（checkpoint 时序偏差 10pp）|
+| R4-A1 | revisit_penalty（失败） | — | **P9（马尔可夫性违反）** ← 结构性失败 |
+| R4-A2 | visited_map 4通道 | 75% | P7 未修复导致 EVAL 峰值无法转化为 Holdout 提升 |
+| R4-A3 (double) | EVAL checkpoint + BFS + visited_map | 78% | EVAL→Holdout gap 10pp 持续（算法限制） |
+| **R4 dueling** | 同 A3 超参 + Dueling 架构 | **84%** | **EVAL→Holdout gap 仅 6pp（最优泛化）** |
+| R4 double_dueling | 同上 + Double DQN | 81% | 收敛快但末段稳定性略低 |
+| R4 vanilla | 同上，无增强 | 75% | EVAL 峰值虚高（94%），真实泛化最弱 |
+
+**最终结论（五点）**：
+
+1. **Dueling 架构是本任务的最优选择**：V(s)/A(s,a) 分解使网络能将"位置价值"与"动作优势"解耦学习，与随机起终点迷宫导航任务的结构性质（大量多动作等效状态）高度吻合，最终 Holdout 84%（+10pp vs R3），EVAL→Holdout gap 6pp（最小，泛化最稳）。
+
+2. **Double DQN 主要收益在训练过程，非最终结果**：危机期加速恢复（ep=700 领先 dueling 48pp）和早期收敛加速是真实可量化的收益；但在 5000 ep 充分训练后，与纯 dueling 的最终 Holdout 差距（81% vs 84%）表明 Double DQN 的抗高估机制在本任务规模下已不是瓶颈。
+
+3. **EVAL→Holdout gap 是算法质量的独立指标**：Gap 越小说明策略对未见地图的鲁棒性越高。dueling gap 6pp、double_dueling 9pp、double 10pp、vanilla 19pp，与各算法的架构泛化能力排序一致，可作为独立于 Holdout 成功率的泛化质量指标。
+
+4. **P7（EVAL-based checkpoint）是最高性价比的单项修复**：R3→R4(double) +4pp Holdout 提升中，大部分来自 checkpoint 策略修正；配合 dueling 架构进一步提升至 84%，累计 +10pp vs R3。
+
+5. **P9（马尔可夫性违反）是硬约束**：任何将 episode 历史信息置于奖励函数中的循环抑制方案（revisit_penalty 等）均导致 Q 函数目标无意义，正确解决方案唯有状态编码（visited_map）。
+
+---
+
+### 所需截图（四算法对比）
+
+- [ ] `r4_four_algo_eval_crisis.png`：四算法 ep=300–900 EVAL 曲线，体现危机深度与恢复速度差异
+- [ ] `r4_four_algo_holdout_bar.png`：四算法 Holdout 成功率柱状图（含 R3 参考线）
+- [ ] `r4_dueling_vs_double_dueling_late.png`：ep=3000–5000 曲线对比，体现 dueling 末段稳定性优于 double_dueling
+- [ ] `r4_vanilla_eval_overfit.png`：vanilla ep=4000–5000 曲线，体现 EVAL 峰值虚高（94%）与下降
+
