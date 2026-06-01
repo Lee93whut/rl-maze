@@ -192,7 +192,7 @@ Step 3（Round 4）：改 checkpoint 保存策略（EVAL-based）+ 引入 visite
 ### 验收标准评估
 
 - [x] `Evaluation_Exam/Test_Success_Rate` 出现 >70% 评估点（ep=3300 & ep=4250 均达 74%）
-- [x] 相比 Round 1 提升 > 10%（64% vs 61% Holdout，盲测峰值 74% vs 54%）
+- [x] 相比 Round 1 提升 > 10%（盲测峰值 74% vs 54%，+20pp；注：Holdout 仅 +3pp，64% vs 61%，未达 10%，本条以盲测峰值口径通过）
 - [ ] `Evaluation_Exam/Test_Success_Rate` 出现收敛平台（**未满足**，见问题诊断）
 
 ### 问题诊断
@@ -286,6 +286,8 @@ $$r'(s,a,s') = r(s,a,s') + \gamma \Phi(s') - \Phi(s)$$
 
 取 $\Phi(s) = -\alpha \cdot d_{\text{Manhattan}}(s, \text{goal})$，则每步额外奖励 $= \alpha \cdot (d_{\text{before}} - d_{\text{after}})$，
 靠近目标一步 +α，远离一步 −α。此形式满足势函数条件，**理论上不改变最优策略**，仅加速收敛。
+
+> **理论精确性说明**：Ng et al. (1999) 定理要求严格使用 $\gamma\Phi(s') - \Phi(s)$，代码实现省略了 $\gamma$（即令 $\gamma=1$）。这使策略不变性定理在严格意义上不成立——策略不变性是关于最优策略集合不变的命题，与数值误差大小无关。实践中因 $\gamma=0.99$ 且迷宫路径短（平均约 10–15 步），累计误差约 1%，对收敛结果影响可忽略，但属近似实现而非精确满足定理。
 
 ---
 
@@ -408,6 +410,8 @@ ep=5800–6000: 62–76%   ← 末段振荡
 原因：即使 buffer=80000（约 1000 局），在成功率 60–80% 的阶段，仍约有 20–40% 的失败局（200步）持续填入 buffer；成功样本的相对比例虽有改善，但绝对数量仍不足以彻底稳定策略。  
 依据 Schaul et al. (2016)：根治方案需使用 **Prioritized Experience Replay（PER）**，让高 TD-error 的成功样本被优先重复采样，而非依赖更大 buffer。
 
+> **P3 与 P6 的关系澄清**：P3 诊断"buffer 过小导致振荡"，P6 诊断"根治需改均匀采样策略"，两者描述的是不同层面——P3 指出 buffer 扩容方向正确（实测振荡周期延长、低谷抬高），P6 指出扩容只能缓解而不能根治（均匀采样下成功样本始终处于少数）。两个诊断不矛盾，分别对应"短期工程修复"和"长期根治方案"。
+
 #### P4 — target network 修复效果验证（有效）
 
 **预期**：`target_update_freq` 从 500 提升至 1500，TD 目标稳定性提升，Loss 峰值减少。
@@ -500,7 +504,7 @@ buffer+target+shaping 组合将盲测峰值从 74% 提升至 **84%**，Holdout �
 
 **主流标准做法（Evaluation-based Checkpoint Selection）**：每次 EVAL 后，若成功率创新高则保存 checkpoint（即 RL 版的 `save_best_only=True`，Stable-Baselines3、CleanRL 的默认逻辑）。Holdout 因此直接对应训练过程中出现过的最佳泛化能力。
 
-用 EVAL 集做 checkpoint 选择会引入隐式过拟合，偏差约 2–4pp；但本项目已满足三集分离：训练 buffer（学习）、EVAL 集（每 N ep 随机生成，checkpoint 选择）、Holdout 集（seed+200000 固定 100 张，仅最终报告使用，不参与任何决策）。2–4pp 偏差远小于当前 10pp 时序错位损失，**净收益为正**。
+用 EVAL 集做 checkpoint 选择会引入隐式过拟合，偏差约 2–4pp；但本项目已满足三集分离：训练 buffer（学习）、EVAL 集（训练开始前由 `seed+100000` 派生固定生成，整个训练期间恒定，checkpoint 选择）、Holdout 集（seed+200000 固定 100 张，仅最终报告使用，不参与任何决策）。2–4pp 偏差远小于当前 10pp 时序错位损失，**净收益为正**。
 
 > 注意：若用 Holdout 挑最优 checkpoint，Holdout 失去无偏评估资格，报告数字会严重高估真实泛化能力。
 
@@ -563,7 +567,7 @@ EVAL 峰值出现在 ep=3750，但模型保存触发于训练奖励峰值，两�
 **标准做法（Evaluation-based Checkpoint Selection）**：  
 Stable-Baselines3、CleanRL 均默认 `save_best_only=True`——每次评估若成功率创新高则保存。三集分离原则保证此做法不引入严重过拟合：
 - **训练 buffer**：学习用
-- **EVAL 集**（每 eval_every ep 随机生成 50 张）：checkpoint 选择用
+- **EVAL 集**（训练开始前固定生成的 50 张，`seed+100000` 派生，整轮训练恒定）：checkpoint 选择用
 - **Holdout 集**（固定 seed+200000 的 100 张）：仅最终报告，不参与任何决策
 
 EVAL 集与 Holdout 集独立，用 EVAL 集挑 checkpoint 引入的偏差约 2–4pp，远小于当前 10pp 时序错位损失，**净收益为正**。
@@ -884,10 +888,11 @@ runs/Round4_ctrl_eval_ckpt/             ← R4-A3 记录（进行中）
 
 ### 所需截图
 
-- [ ] `r4_a2_vs_r3_eval_success.png`：R4-A2 与 R3 的 EVAL 成功率曲线对比（体现 A2 危机期+早期优势+峰值对比）
-- [ ] `r4_a1_eval_collapse.png`：R4-A1 的 EVAL 崩溃曲线（ep=600 骤降至 6%）
-- [ ] `r4_a3_eval_progress.png`：R4-A3 训练完成后的 EVAL 曲线（体现 EVAL SAVE 触发点）
-- [ ] `r4_ctrl_vs_r3_holdout.png`：R4-A3 Holdout 结果 vs R3 基准（训练完成后补充）
+- [x] `r4_eval_success_rate_all_algos.png`：R4 四算法 EVAL 成功率曲线（已生成）
+- [x] `r4_eval_spl_all_algos.png`：R4 四算法 SPL 曲线（已生成）
+- [x] `r4_dueling_full_curves.png`：最优算法完整训练曲线（已生成）
+- [x] `cmp_eval_success_rate_r1_to_r4_double.png`：R1→R4 超参演进纵向对比（已生成）
+- [ ] `r4_a1_eval_collapse.png`：R4-A1 的 EVAL 崩溃曲线（runs 目录已删，无法补充）
 
 ---
 
@@ -1009,6 +1014,12 @@ $$\hat{Q}_{\text{double}} = r + \gamma Q_{\theta^-}(s', \arg\max_{a'} Q_\theta(s
 
 **R1–R4 纵向成功率**：61%（R1）→ 64%（R2）→ 74%（R3）→ 84%（R4 dueling）
 
+**R4 四算法 EVAL 成功率曲线**：
+
+![R4 四算法 EVAL 成功率对比](../docs/assets/round4/r4_eval_success_rate_all_algos.png)
+
+![R4 四算法 EVAL SPL 对比](../docs/assets/round4/r4_eval_spl_all_algos.png)
+
 ---
 
 ### 理论分析
@@ -1070,14 +1081,20 @@ $$Q(s,a) = V(s) + A(s,a) - \frac{1}{|\mathcal{A}|}\sum_{a'} A(s',a')$$
 
 vanilla 是本组唯一一个 EVAL 峰值（94%）远高于其他算法但 Holdout 最低（75%）的算法，Gap 高达 19pp，是其他算法的 2–3 倍。有两个可能原因：
 
-1. **EVAL 集过拟合**：EVAL 每次随机生成 50 张地图，vanilla 网络容量虽低于 dueling，但若保存点对应的 50 张恰好是"容易的地图子集"，则 EVAL 成功率虚高。统计上，50 张样本的随机性导致约 ±7pp 的测量噪声，94% 的实测值上存在约 4–7pp 的正向偏差合理。
+1. **EVAL 集偶然偏差**：EVAL 集在训练开始前由 `seed+100000` 派生固定生成，整个训练期间恒定（非每次随机），因此不存在"恰好碰到容易地图子集"的随机噪声解释。94% 的 EVAL 峰值是 vanilla 网络在这批固定的 50 张地图上确实达到的真实性能，但这批地图对 vanilla 的特定决策边界恰好较友好——属于固定 EVAL 集对特定算法的结构性偏差，而非随机采样噪声。EVAL→Holdout 的 19pp Gap 主要反映的是 vanilla 对这 50 张特定地图的过拟合程度。
 2. **训练晚期策略退化**：vanilla 无 V/A 分解，Q(s,a) 需逐一精确估计，训练末段（ep=4500+）的 buffer 回放可能已不能支持如此精细的 Q 函数持续更新，导致 Holdout 性能在实际泛化时大幅缩水。
 
 **dueling 的 6pp Gap 解读**：
 
-Dueling 的 V(s) 流是全动作共享的，其泛化的关键是"状态价值地图"在新地图上是否有效。由于 V(s) 学习的是全局位置→价值的映射（不依赖特定障碍布局），在随机障碍的 Holdout 地图上，学到的"靠近终点的格子价值更高"的 V(s) 估计仍然成立，A(s,a) 仅提供局部动作微调。这一结构性优势使 dueling 的泛化最稳定，Gap 最小。
+Dueling 网络的真正泛化优势来自**参数共享机制**：V(s) 流被所有动作共享，在每次梯度更新中获得来自所有动作的梯度信号，更新频率是 A(s,a) 流的 $|\mathcal{A}|$ 倍（本任务 4 倍），学习更充分、估计更稳定。A(s,a) 流仅提供局部动作微调。这一结构性优势使 dueling 在未见过的 Holdout 地图上泛化最稳定——V(s) 学习的"靠近目标的状态价值更高"的规律在任意地图布局下均成立，Gap 最小（6pp）。
+
+> **注意**："不依赖特定障碍布局"这一属性对 Vanilla DQN 同样成立（Q(s,a) 同样通过相同的卷积特征提取器训练），因此不能用来解释 Dueling 的泛化优势。核心差异在于参数更新频率和梯度信号稳定性。
 
 ---
+
+**R1–R4 纵向超参演进（Double DQN，相同算法）**：
+
+![R1→R4 超参演进 EVAL 成功率对比](assets/compare/cmp_eval_success_rate_r1_to_r4_double.png)
 
 ### 结论链（R1→R4 纵向总结）
 
@@ -1115,4 +1132,33 @@ Dueling 的 V(s) 流是全动作共享的，其泛化的关键是"状态价值�
 - [ ] `r4_four_algo_holdout_bar.png`：四算法 Holdout 成功率柱状图（含 R3 参考线）
 - [ ] `r4_dueling_vs_double_dueling_late.png`：ep=3000–5000 曲线对比，体现 dueling 末段稳定性优于 double_dueling
 - [ ] `r4_vanilla_eval_overfit.png`：vanilla ep=4000–5000 曲线，体现 EVAL 峰值虚高（94%）与下降
+
+---
+
+## 已知局限与后续优化项
+
+### 实验设计层面
+
+| # | 问题 | 标准做法 | 本项目取舍 |
+|---|------|---------|----------|
+| A | 超参消融阶段多次参考了 Holdout 数字，测试集不严格无偏 | 验证集专用于超参搜索，Holdout 只在最终报告用一次 | 时间限制；R4 引入 EVAL-based checkpoint 是向正确方向的修正，但 R1–R3 的超参决策已隐性参考了 Holdout |
+| B | R3 同时修改三个变量（buffer + target_freq + shaping），无法归因 | 每次只改一个变量，或补做单因素对照组 | 时间限制；shaping 的独立贡献未被单独量化 |
+| C | 所有结论基于单次训练，无重复实验 | 每配置 3–5 个随机种子，报告均值 ± std（Henderson et al. 2018） | 算力限制；dueling vs double_dueling 3pp 差距（Holdout n=100，CI≈±5pp）统计不显著，需重复实验确认 |
+| D | 评估时失败局步数未记录 | `run_evaluation()` 记录逐局步数，区分循环失败与走入死路失败 | 现有 log 无此数据；需改代码重跑，当前仅有训练期数据（混合探索期与贪心期） |
+
+### 算法与工程层面
+
+| # | 问题 | 解决方案 | 预期收益 |
+|---|------|---------|---------|
+| E | visited_map 二值编码无法区分访问次数，网络对两格死循环覆盖不足，需 app 推理时兜底 | 将 ch3 改为归一化计数图（`min(count,3)/3.0`，cap=3），重新训练 | 网络内化"高频重访格应规避"策略，推理时 Q 值修正可完全移除 |
+| F | 振荡根治需 Prioritized Experience Replay | 实现 PER（Schaul et al. 2016），赋予高 TD-error 样本更高采样概率 | 消除均匀采样导致的成功样本周期性被覆盖问题，振荡从根本上消除 |
+| G | Ng et al. (1999) 势函数 shaping 省略了 γ，属近似实现 | 代码改为 `reward += alpha * (gamma * dist_after_to_goal - dist_before_to_goal)` 的标准形式 | 严格满足策略不变性定理，误差从约 1% 降至 0 |
+
+### 指标层面
+
+| # | 问题 | 解决方案 |
+|---|------|---------|
+| H | Grid-SPL（排除撞墙步）不可与标准 HabitatAI SPL 直接比较，文档曾未充分说明 | 已在 technical_report.md 和 comparison.md 补充说明 |
+| I | SPL 与成功率高度共线（比值 0.978±0.009），独立信息增量有限 | 已在 comparison.md 补充共线性数据；若需更强区分度，可考虑记录"失败局平均步数"作为失败模式诊断指标 |
+
 

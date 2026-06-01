@@ -26,7 +26,7 @@
 | R1 | 基线（随机起终点初版） | 61.0% | — | 诊断 P1（训练量）+ P2（探索）+ P3（buffer）+ P4（target）|
 | R2 | `ep=6000` + `decay=0.9985` | 64.0% | 74.0% | P1/P2 消除；振荡周期 400–500 ep（P3 定量确认）|
 | R3 | `buffer=80k` + `target=1500` + `shaping=0.5` | **74.0%** | **84.0%** | 峰值突破 80%；Holdout 低于峰值 10pp（P6：保存策略错位）|
-| R4 | EVAL-based checkpoint + visited_map 第四通道（revisit_penalty 因违反马尔可夫性弃用） | **78.0%** | **0.773** | |
+| R4 | EVAL-based checkpoint + visited_map 第四通道（revisit_penalty 因违反马尔可夫性弃用） | **84.0%**（dueling） | **88.0%**（dueling，ep=4900） | 四算法横向消融最优；double(A3) Holdout 78%，见 experiment_log.md Round 4 |
 
 ---
 
