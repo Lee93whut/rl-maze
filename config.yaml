@@ -29,10 +29,10 @@ dqn:
 
   # ── Algorithm variant ─────────────────────────────────────────────────
   # vanilla        : DQNNetwork    + Vanilla Target   (Mnih et al., 2015)
-  # double         : DQNNetwork    + Double DQN       (van Hasselt et al., AAAI 2016)  ← 最优（R3 Holdout 74%）
-  # dueling        : DuelingDQN    + Vanilla Target   (Wang et al., 2016)
+  # double         : DQNNetwork    + Double DQN       (van Hasselt et al., AAAI 2016)
+  # dueling        : DuelingDQN    + Vanilla Target   (Wang et al., 2016)  ← 最优（R4 Holdout 84%）
   # double_dueling : DuelingDQN    + Double DQN       (两项改进正交叠加)
-  algorithm: "double"
+  algorithm: "dueling"
 
   # ── Replay Buffer ────────────────────────────
   buffer_capacity: 80000      # max transitions stored (ring-list, O(batch_size) sampling)
