@@ -29,8 +29,10 @@ python src/train.py --config config.yaml --overfit
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import random
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -46,6 +48,29 @@ from torch.utils.tensorboard import SummaryWriter
 # 小网络在 CPU 上多线程反而因调度开销变慢，限制为 4 线程性能最优
 # benchmark 实测：8线程 13.6s vs 16线程 528s（0.03x），4线程约快 2-3x
 torch.set_num_threads(4)
+
+# ── 日志配置 ─────────────────────────────────────────────────────────────────
+def _setup_logging(level: int = logging.INFO) -> logging.Logger:
+    """配置模块级 logger，输出到控制台。
+
+    日志格式：时间戳 | 级别 | 消息
+    可通过环境变量 LOG_LEVEL 覆盖默认级别（例：export LOG_LEVEL=DEBUG）
+    """
+    env_level = os.environ.get("LOG_LEVEL", "").upper()
+    if env_level in logging._levelToName.values():  # type: ignore[attr-defined]
+        level = getattr(logging, env_level, level)
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)-7s | %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stdout,
+    )
+    logger = logging.getLogger("train")
+    return logger
+
+
+logger = _setup_logging()
 
 # ── 项目内部模块 ──────────────────────────────────────────────────────────────
 # maze_env 通过 `pip install -e .` 安装，可直接 import。
@@ -383,9 +408,9 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
             "num_test_mazes":    ov.get("num_test_mazes",     10),
         })
         run_tag = f"overfit_5x5_{algorithm}"
-        print("=" * 60)
-        print("  [OVERFIT MODE] 5×5 超小迷宫过拟合调试")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info("  [OVERFIT MODE] 5×5 超小迷宫过拟合调试")
+        logger.info("=" * 60)
     else:
         run_tag = f"train_{algorithm}"
 
@@ -427,14 +452,14 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
     # ── Seed Lock ────────────────────────────────────────────────────────
     set_seed(seed)
 
-    # ── 设备 ───────────────────────────────────────────────────────────────
+# ── 设备 ───────────────────────────────────────────────────────────────
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Device] {device}  |  Grid {grid_size}×{grid_size}  |  "
+    logger.info(f"[Device] {device}  |  Grid {grid_size}×{grid_size}  |  "
           f"Episodes {num_episodes}  |  Seed {seed}")
-    print(f"[Algorithm] {algorithm.upper()}  |  "
+    logger.info(f"[Algorithm] {algorithm.upper()}  |  "
           f"Net={'Dueling' if use_dueling else 'Vanilla'}  |  "
           f"Target={'Double' if use_double else 'Vanilla'}")
-    print(f"[Warmup] 前 {warmup_episodes} 局纯随机探索，不执行梯度更新")
+    logger.info(f"[Warmup] 前 {warmup_episodes} 局纯随机探索，不执行梯度更新")
 
     # ── 环境（训练用）──────────────────────────────────────────────────────
     # 正常训练：不传 seed，每局 reset() 使用 Gymnasium 内部 RNG 续进，
@@ -467,7 +492,7 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
     timestamp  = time.strftime("%Y%m%d_%H%M%S")
     writer_dir = os.path.join(log_dir, f"{run_tag}_{timestamp}")
     writer     = SummaryWriter(log_dir=writer_dir)
-    print(f"[TensorBoard] tensorboard --logdir={log_dir}")
+    logger.info(f"[TensorBoard] tensorboard --logdir={log_dir}")
 
     # ── 保存目录 ───────────────────────────────────────────────────────────
     os.makedirs(save_dir, exist_ok=True)
@@ -484,10 +509,10 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
     global_update_steps = 0                 # Backend_Net/ 横坐标
     total_env_steps     = 0                 # 全局环境交互步数（用于 Target Net 同步）
 
-    print(f"\n{'─'*70}")
-    print(f"{'Ep':>6} {'Reward':>8} {'Steps':>6} {'Eps':>7} "
+    logger.info(f"\n{'─'*70}")
+    logger.info(f"{'Ep':>6} {'Reward':>8} {'Steps':>6} {'Eps':>7} "
           f"{'Loss':>8} {'AvgQ':>7} {'Suc%':>6} {'BestR':>8}")
-    print(f"{'─'*70}")
+    logger.info(f"{'─'*70}")
 
     # =========================================================
     # 主训练循环
@@ -615,7 +640,7 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
             )
             writer.add_scalar("Evaluation_Exam/Test_Success_Rate", test_success_rate, episode)
             writer.add_scalar("Evaluation_Exam/SPL",               test_spl,          episode)
-            print(f"  [EVAL ep={episode:4d}]  "
+            logger.info(f"  [EVAL ep={episode:4d}]  "
                   f"Test_Success={test_success_rate:.1f}%  "
                   f"SPL={test_spl:.3f}  "
                   f"(越接近 1.0 越好，失败局贡献 0)")
@@ -637,7 +662,7 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
                     },
                     best_model_path,
                 )
-                print(f"  [EVAL SAVE] EVAL 新高 {best_eval_success:.1f}% → 已保存 {best_model_path}")
+                logger.info(f"  [EVAL SAVE] EVAL 新高 {best_eval_success:.1f}% → 已保存 {best_model_path}")
 
         # ── Best Model Save（训练奖励，仅用于控制台 ✓ 标记，不再保存权重）────
         # 权重保存已移至 EVAL-based checkpoint（见上方 EVAL 块）。
@@ -653,13 +678,13 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
             # 每 20 行数据前重打一次表头，方便在长日志中快速定位列含义
             _rows_printed = (episode // print_every)
             if episode == 1 or _rows_printed % 20 == 0:
-                print(f"{'─'*70}")
-                print(f"{'Ep':>6} {'Reward':>8} {'Steps':>6} {'Eps':>7} "
+                logger.info(f"{'─'*70}")
+                logger.info(f"{'Ep':>6} {'Reward':>8} {'Steps':>6} {'Eps':>7} "
                       f"{'Loss':>8} {'AvgQ':>7} {'Suc%':>6} {'BestR':>8}")
-                print(f"{'─'*70}")
+                logger.info(f"{'─'*70}")
             warmup_flag = " [WARMUP]" if in_warmup else ""
             saved_flag  = " ✓" if model_saved else ""
-            print(
+            logger.info(
                 f"{episode:>6d}  "
                 f"{ep_reward:>8.1f}  "
                 f"{ep_steps:>6d}  "
@@ -672,22 +697,22 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
 
     # ── 训练结束 ──────────────────────────────────────────────────────────
     writer.close()
-    print(f"\n{'═'*70}")
-    print(f"  训练完成。共 {num_episodes} 个 Episode，{total_env_steps} 环境步，"
+    logger.info(f"\n{'═'*70}")
+    logger.info(f"  训练完成。共 {num_episodes} 个 Episode，{total_env_steps} 环境步，"
           f"{global_update_steps} 梯度步。")
-    print(f"  Best Avg Reward（近{save_window}局）: {best_avg_reward:.2f}")
-    print(f"  最终 ε = {epsilon:.4f}")
-    print(f"  模型已保存至：{best_model_path}")
-    print(f"  TensorBoard：tensorboard --logdir={log_dir}")
-    print(f"{'═'*70}\n")
+    logger.info(f"  Best Avg Reward（近{save_window}局）: {best_avg_reward:.2f}")
+    logger.info(f"  最终 ε = {epsilon:.4f}")
+    logger.info(f"  模型已保存至：{best_model_path}")
+    logger.info(f"  TensorBoard：tensorboard --logdir={log_dir}")
+    logger.info(f"{'═'*70}\n")
 
     # ── Holdout Test：训练后一次性最终评估（仅正常训练模式执行）─────────────
     # Holdout 地图（seed+200000）在整个训练过程中从未使用，
     # 是唯一可对外报告的无偏泛化性能数字。
     if not overfit_mode and os.path.exists(best_model_path):
-        print("=" * 70)
-        print("  [HOLDOUT TEST] 加载 best_model.pth，在 100 张全新地图上最终评估")
-        print("=" * 70)
+        logger.info("=" * 70)
+        logger.info("  [HOLDOUT TEST] 加载 best_model.pth，在 100 张全新地图上最终评估")
+        logger.info("=" * 70)
         holdout_seed_base = seed + 200000
         holdout_seeds     = [holdout_seed_base + i for i in range(100)]
 
@@ -708,10 +733,10 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
             reward_step=reward_step_r,
             random_start_goal=random_start_goal,
         )
-        print(f"  Holdout Success Rate : {holdout_sr:.1f}%  (100 张独立地图)")
-        print(f"  Holdout SPL          : {holdout_spl:.3f}  (Success-weighted Path Length，越接近 1.0 越好)")
-        print(f"  ← 此数字为唯一可信的最终泛化性能，可对外报告。")
-        print("=" * 70 + "\n")
+        logger.info(f"  Holdout Success Rate : {holdout_sr:.1f}%  (100 张独立地图)")
+        logger.info(f"  Holdout SPL          : {holdout_spl:.3f}  (Success-weighted Path Length，越接近 1.0 越好)")
+        logger.info(f"  ← 此数字为唯一可信的最终泛化性能，可对外报告。")
+        logger.info("=" * 70 + "\n")
 
     # ── 过拟合模式验收断言 ─────────────────────────────────────────────────
     if overfit_mode:
@@ -730,12 +755,12 @@ def train(cfg: dict[str, Any], overfit_mode: bool = False) -> None:
             reward_step=reward_step_r,
             random_start_goal=False,   # overfit 模式始终固定起终点
         )
-        print(f"[OVERFIT 验收] 固定地图（seed={overfit_eval_seed}）成功率: "
+        logger.info(f"[OVERFIT 验收] 固定地图（seed={overfit_eval_seed}）成功率: "
               f"{final_success_rate:.1f}%  SPL={final_spl:.3f}")
         if final_success_rate >= 80.0:
-            print("✅  过拟合测试通过：Agent 已在 5×5 迷宫上充分收敛。")
+            logger.info("✅  过拟合测试通过：Agent 已在 5×5 迷宫上充分收敛。")
         else:
-            print("⚠️  过拟合测试未达预期（成功率 < 80%），请检查超参数。")
+            logger.warning("⚠️  过拟合测试未达预期（成功率 < 80%），请检查超参数。")
 
 
 # ===========================================================================
@@ -785,6 +810,6 @@ if __name__ == "__main__":  # pragma: no cover
     if args.algorithm is not None:
         key = "overfit" if overfit_mode else "dqn"
         cfg.setdefault(key, {})["algorithm"] = args.algorithm
-        print(f"[CLI] --algorithm 覆盖 config.yaml：algorithm = {args.algorithm}")
+        logger.info(f"[CLI] --algorithm 覆盖 config.yaml：algorithm = {args.algorithm}")
 
     train(cfg, overfit_mode=overfit_mode)

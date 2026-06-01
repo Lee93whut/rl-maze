@@ -779,7 +779,7 @@ best_eval_success = float("-inf")
 if not in_warmup and test_success_rate > best_eval_success:
     best_eval_success = test_success_rate
     torch.save({"state_dict": policy_net.state_dict(), ...}, best_model_path)
-    print(f"  [EVAL SAVE] EVAL 新高 {best_eval_success:.1f}%")
+    logger.info(f"  [EVAL SAVE] EVAL 新高 {best_eval_success:.1f}%")
 # 训练奖励保存块保留 ✓ 标记，不再写入权重
 ```
 
