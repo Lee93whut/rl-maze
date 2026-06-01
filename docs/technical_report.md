@@ -113,10 +113,10 @@ Step 级 warmup 可能在一局中途切换为学习模式，导致同一局内�
 
 ### 4.3 Grid-SPL（Anderson et al. 2018 变体）
 
-$$\text{SPL} = \frac{1}{N} \sum_{i=1}^{N} S_i \cdot \frac{\ell^{*}_{i}}{\max(\ell^{*}_{i},\, p_{i})}$$
+$$\mathrm{SPL} = \frac{1}{N} \sum_{i=1}^{N} S_i \cdot \frac{\ell^*_i}{\max(\ell^*_i, p_i)}$$
 
 - $S_i$：第 i 局成功标志（0/1）
-- $\ell^{*}_i$：BFS 最短路径步数
+- $\ell^*_i$：BFS 最短路径步数
 - $p_i$：Agent **实际移动步数**（排除撞墙步，见下方说明）
 
 失败局整项贡献 0，同时惩罚绕路行为，比纯成功率更严格。
