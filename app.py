@@ -177,11 +177,9 @@ def generate_maze_with_random_sg(
         # 极端情况（障碍密度极高）：退回到固定起终点
         return wall_map, (1, 1), (GRID_SIZE - 2, GRID_SIZE - 2)
 
-    # 使用 env.np_random（与训练逻辑完全一致，不污染全局随机状态）
-    idxs = env.np_random.integers(0, len(inner_cells), size=2)
-    while idxs[0] == idxs[1]:
-        idxs = env.np_random.integers(0, len(inner_cells), size=2)
-
+    # rng.choice(replace=False) 一次调用天然保证两个索引不重复，
+    # 消除 rejection sampling 的潜在无限循环风险
+    idxs = env.np_random.choice(len(inner_cells), size=2, replace=False)
     start = inner_cells[int(idxs[0])]
     goal  = inner_cells[int(idxs[1])]
     return wall_map, start, goal

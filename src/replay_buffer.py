@@ -19,7 +19,7 @@
 * ``action``     : ``int``
 * ``reward``     : ``float``
 * ``next_state`` : ``np.ndarray`` shape ``(4, N, N)`` float32
-* ``done``       : ``bool``  （terminated OR truncated）
+* ``done``       : ``bool``  （terminated only，截断不视为终止）
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class Transition(NamedTuple):
     action:     int
     reward:     float
     next_state: np.ndarray   # (4, N, N) float32
-    done:       bool         # terminated | truncated
+    done:       bool         # terminated only（截断不视为终止，与 train.py 第 138/542 行一致）
 
 
 class ReplayBuffer:
@@ -84,7 +84,7 @@ class ReplayBuffer:
             action:     执行的动作编号。
             reward:     获得的即时奖励。
             next_state: 下一步观测，shape ``(4, N, N)``。
-            done:       本步是否为幕终止（terminated | truncated）。
+            done:       本步是否为幕终止（terminated only；截断信号不存入，与 train.py 保持一致）。
         """
         t = Transition(
             state=state,

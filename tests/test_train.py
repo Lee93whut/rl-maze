@@ -4,7 +4,7 @@
 * set_seed          — 随机源锁定
 * select_action     — ε=1.0 纯随机 / ε=0.0 贪心两个分支
 * optimize_model    — Vanilla DQN 与 Double DQN 损失计算
-* run_evaluation    — 成功率 / POR 指标输出
+* run_evaluation    — 成功率 / SPL 指标输出
 * train() 配置验证  — VALID_ALGORITHMS 异常路径
 """
 
@@ -235,9 +235,9 @@ class TestRunEvaluation:
             reward_step=-1.0,
         )
         assert len(result) == 2
-        sr, por = result
+        sr, spl = result
         assert isinstance(sr,  float)
-        assert isinstance(por, float)
+        assert isinstance(spl, float)
 
     def test_success_rate_in_range(self) -> None:
         net = _make_net()
@@ -254,9 +254,9 @@ class TestRunEvaluation:
         )
         assert 0.0 <= sr <= 100.0, f"success_rate 应在 [0,100]，得到 {sr}"
 
-    def test_por_nonnegative(self) -> None:
+    def test_spl_nonnegative(self) -> None:
         net = _make_net()
-        _, por = run_evaluation(
+        _, spl = run_evaluation(
             policy_net=net,
             grid_size=5,
             obstacle_density=0.0,
@@ -267,7 +267,7 @@ class TestRunEvaluation:
             reward_wall_hit=-10.0,
             reward_step=-1.0,
         )
-        assert por >= 0.0
+        assert spl >= 0.0
 
     def test_policy_restored_to_train_mode(self) -> None:
         """run_evaluation 结束后 policy_net 应回到 train() 模式。"""
@@ -285,10 +285,10 @@ class TestRunEvaluation:
         )
         assert net.training, "run_evaluation 结束后网络应处于 train() 模式"
 
-    def test_empty_seeds_returns_zero_por(self) -> None:
-        """空测试集返回 por=0.0；success_rate 为 nan（np.mean 空列表行为），但 por 有保护。"""
+    def test_empty_seeds_returns_zero_spl(self) -> None:
+        """空测试集返回 spl=0.0；success_rate 为 nan（np.mean 空列表行为），但 spl 有保护。"""
         net = _make_net()
-        _, por = run_evaluation(
+        _, spl = run_evaluation(
             policy_net=net,
             grid_size=5,
             obstacle_density=0.0,
@@ -299,7 +299,7 @@ class TestRunEvaluation:
             reward_wall_hit=-10.0,
             reward_step=-1.0,
         )
-        assert por == 0.0
+        assert spl == 0.0
 
 
 # ===========================================================================
